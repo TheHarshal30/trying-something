@@ -1,0 +1,14 @@
+{
+  "model": "sapbert",
+  "dataset": "ncbi",
+  "split": "test",
+  "acc@1": 0.6067839195979899,
+  "acc@5": 0.7298994974874372,
+  "acc@10": 0.792713567839196,
+  "mrr": 0.6638948711813033,
+  "total_mentions": 796,
+  "found_in_top_k": 631,
+  "not_found": 165,
+  "runtime_sec": 49.17,
+  "date": "2026-04-05"
+}

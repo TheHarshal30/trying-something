@@ -1,0 +1,14 @@
+{
+  "model": "sapbert",
+  "dataset": "bc5cdr_d",
+  "split": "test",
+  "acc@1": 0.7209926224010731,
+  "acc@5": 0.8604963112005366,
+  "acc@10": 0.9076682316118936,
+  "mrr": 0.7800997342077154,
+  "total_mentions": 4473,
+  "found_in_top_k": 4060,
+  "not_found": 413,
+  "runtime_sec": 59.36,
+  "date": "2026-04-05"
+}

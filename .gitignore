@@ -1,0 +1,25 @@
+# data — never commit raw data or large KB files
+data/raw/
+data/lookups/
+
+# model weights — share via Drive instead
+models/*/weights/
+
+# python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+
+# results — optional, comment out if you want to track results in git
+# results/
+
+# jupyter checkpoints
+.ipynb_checkpoints/
+
+# mac
+.DS_Store
+
+# env files
+.env

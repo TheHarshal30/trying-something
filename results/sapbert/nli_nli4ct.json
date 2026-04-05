@@ -1,0 +1,16 @@
+{
+  "model": "sapbert",
+  "dataset": "nli4ct",
+  "accuracy": 0.526,
+  "majority_baseline": 0.579,
+  "improvement": -0.0531,
+  "per_class_f1": {
+    "Contradiction": 0.5919,
+    "Entailment": 0.4347
+  },
+  "macro_f1": 0.5133,
+  "num_train": 3466,
+  "num_test": 867,
+  "runtime_sec": 182.05,
+  "date": "2026-04-05"
+}
