@@ -2,6 +2,8 @@
 
 This folder contains the next model after the Word2Vec baseline: a small BERT-style encoder trained from scratch on processed PubMed text.
 
+If you trained the tokenizer before commit `dc72038`, delete the old tokenizer directory and retrain it after pulling the latest code. The updated script saves a Hugging Face-compatible tokenizer more reliably on some server setups.
+
 ## Recommended architecture
 
 Start with this configuration:
