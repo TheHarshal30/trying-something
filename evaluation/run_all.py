@@ -68,14 +68,13 @@ def load_embedder(model_name: str):
         embedder._name = 'minilm'
         return embedder
 
-    # ── team models — uncomment as they are pushed ──
-    
-
-    # elif model_name == 'word2vec':
-    #     from word2vec_embedder import Word2VecEmbedder
-    #     embedder = Word2VecEmbedder()
-    #     embedder.load(str(ROOT / 'models' / 'word2vec' / 'weights'))
-    #     return embedder
+    elif model_name == 'word2vec':
+        import sys
+        sys.path.append(str(ROOT / 'models' / 'word2vec'))
+        from model import Word2VecEmbedder
+        embedder = Word2VecEmbedder()
+        embedder.load(str(ROOT / 'models' / 'word2vec'))
+        return embedder
 
     # elif model_name == 'word2vec_umls':
     #     from word2vec_umls_embedder import Word2VecUMLSEmbedder

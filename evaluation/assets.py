@@ -276,7 +276,7 @@ def ensure_nli_assets(dataset: str | None = None) -> None:
 
 
 def ensure_task_assets(task: str = "all", model_name: str | None = None) -> None:
-    if model_name:
+    if model_name and model_name in MODEL_SPECS:
         ensure_model(model_name)
 
     if task in ("all", "entity_linking"):
