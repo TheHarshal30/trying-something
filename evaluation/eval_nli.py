@@ -39,6 +39,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.pipeline import Pipeline
 
+from assets import ensure_nli_assets
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,8 @@ def evaluate(
 
     if dataset != 'nli4ct':
         raise ValueError(f'unknown dataset: {dataset}. choose nli4ct')
+
+    ensure_nli_assets(dataset)
 
     # ── load data ──
     df, actual_split = load_nli4ct('train')

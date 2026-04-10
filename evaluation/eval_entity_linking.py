@@ -26,6 +26,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
 
+from assets import ensure_entity_linking_assets
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,10 @@ NCBI_DIR      = DATA_DIR / 'raw'  / 'ncbi_disease'
 BC5CDR_DIR    = DATA_DIR / 'raw'  / 'bc5cdr'
 DISEASE_KB    = DATA_DIR / 'lookups' / 'mesh' / 'CTD_diseases.tsv'
 CHEMICAL_KB   = DATA_DIR / 'lookups' / 'mesh' / 'CTD_chemicals.tsv'
+
+
+def _normalize_mesh_id(mesh_id: str) -> str:
+    return mesh_id.split(':')[-1].strip()
 
 
 # ─── KB loader ────────────────────────────────────────────────────────────────
@@ -125,19 +130,46 @@ def load_bc5cdr(split: str = 'test', entity_type: str = 'Disease') -> list[dict]
         'validation': BC5CDR_DIR / 'validation.jsonl',
         'test'      : BC5CDR_DIR / 'test.jsonl',
     }
+    xml_map = {
+        'train'     : BC5CDR_DIR / 'CDR_Data' / 'CDR.Corpus.v010516' / 'CDR_TrainingSet.BioC.xml',
+        'validation': BC5CDR_DIR / 'CDR_Data' / 'CDR.Corpus.v010516' / 'CDR_DevelopmentSet.BioC.xml',
+        'test'      : BC5CDR_DIR / 'CDR_Data' / 'CDR.Corpus.v010516' / 'CDR_TestSet.BioC.xml',
+    }
     mentions = []
-    with open(file_map[split]) as f:
-        for line in f:
-            row = json.loads(line)
-            for ent in row['entities']:
-                if ent['type'] != entity_type:
-                    continue
-                if not ent['normalized']:
-                    continue   # skip NIL
-                text   = ent['text'][0] if ent['text'] else ''
-                mesh_id = ent['normalized'][0]['db_id']
-                if text and mesh_id:
-                    mentions.append({'text': text, 'mesh_id': mesh_id})
+
+    if file_map[split].exists():
+        with open(file_map[split]) as f:
+            for line in f:
+                row = json.loads(line)
+                for ent in row['entities']:
+                    if ent['type'] != entity_type:
+                        continue
+                    if not ent['normalized']:
+                        continue   # skip NIL
+                    text = ent['text'][0] if ent['text'] else ''
+                    mesh_id = _normalize_mesh_id(ent['normalized'][0]['db_id'])
+                    if text and mesh_id:
+                        mentions.append({'text': text, 'mesh_id': mesh_id})
+    else:
+        from bioc import biocxml
+
+        reader = biocxml.BioCXMLDocumentReader(str(xml_map[split]))
+        for doc in reader:
+            for passage in doc.passages:
+                for ent in passage.annotations:
+                    if ent.infons.get('type') != entity_type:
+                        continue
+                    db_ids = ent.infons.get('MESH', '-1')
+                    if not db_ids or db_ids == '-1':
+                        continue
+                    text = (ent.text or '').strip()
+                    if not text:
+                        continue
+                    for raw_id in str(db_ids).split('|'):
+                        mesh_id = _normalize_mesh_id(raw_id)
+                        if mesh_id:
+                            mentions.append({'text': text, 'mesh_id': mesh_id})
+
     print(f'BC5CDR-{"d" if entity_type=="Disease" else "c"} {split}: {len(mentions)} mentions loaded')
     return mentions
 
@@ -178,6 +210,8 @@ def evaluate(
         top_k       : max k for Acc@k
         save_figures: save plots to results/
     """
+
+    ensure_entity_linking_assets(dataset)
 
     # ── resolve dataset config ──
     if dataset == 'ncbi':

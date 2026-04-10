@@ -25,6 +25,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr
 
+from assets import ensure_sts_assets
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,8 @@ def evaluate(
         batch_size  : passed to embedder.encode()
         save_figures: save plots to results/
     """
+
+    ensure_sts_assets(dataset)
 
     # ── load dataset ──
     if dataset == 'biosses':

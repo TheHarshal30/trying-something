@@ -26,6 +26,7 @@ from datetime import date
 
 import pandas as pd
 
+from assets import ensure_model, ensure_task_assets
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -44,26 +45,26 @@ def load_embedder(model_name: str):
     if model_name == 'pubmedbert':
         from pubmedbert_embedder import PubMedBERTEmbedder
         embedder = PubMedBERTEmbedder()
-        embedder.load(str(ROOT / 'models' / 'pubmedbert-local'))
+        embedder.load(ensure_model('pubmedbert'))
         return embedder
     elif model_name == 'sapbert':
         from pubmedbert_embedder import PubMedBERTEmbedder
         embedder = PubMedBERTEmbedder()
-        embedder.load(str(ROOT / 'models' / 'sapbert-local'))
+        embedder.load(ensure_model('sapbert'))
         embedder._name = 'sapbert'
         return embedder
 
     elif model_name == 'biobert':
         from pubmedbert_embedder import PubMedBERTEmbedder
         embedder = PubMedBERTEmbedder()
-        embedder.load(str(ROOT / 'models' / 'biobert-local'))
+        embedder.load(ensure_model('biobert'))
         embedder._name = 'biobert'
         return embedder
 
     elif model_name == 'minilm':
         from pubmedbert_embedder import PubMedBERTEmbedder
         embedder = PubMedBERTEmbedder()
-        embedder.load(str(ROOT / 'models' / 'minilm-local'))
+        embedder.load(ensure_model('minilm'))
         embedder._name = 'minilm'
         return embedder
 
@@ -162,12 +163,20 @@ def main():
     parser.add_argument('--task',  default='all',
                         help='all | entity_linking | sts | nli  (default: all)')
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--download_only', action='store_true',
+                        help='download datasets / KBs / model, then exit')
     args = parser.parse_args()
 
     print(f'\n{"="*60}')
     print(f'  model : {args.model}')
     print(f'  task  : {args.task}')
     print(f'{"="*60}\n')
+
+    ensure_task_assets(task=args.task, model_name=args.model)
+
+    if args.download_only:
+        print('downloads complete')
+        return
 
     # load embedder once — reused across all tasks
     embedder = load_embedder(args.model)

@@ -1,0 +1,14 @@
+numpy
+pandas
+tqdm
+matplotlib
+scikit-learn
+scipy
+seaborn
+torch
+transformers
+sentencepiece
+gensim
+datasets
+requests
+bioc

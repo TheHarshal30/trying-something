@@ -11,12 +11,15 @@ Usage:
     # vectors.shape -> (2, 768)
 """
 
+from pathlib import Path
+
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 
 from base_embedder import BaseEmbedder
+from assets import MODEL_SPECS, ensure_model
 
 
 class PubMedBERTEmbedder(BaseEmbedder):
@@ -41,6 +44,10 @@ class PubMedBERTEmbedder(BaseEmbedder):
         Load tokenizer and model from local path.
         model_path: 'models/pubmedbert-local'
         """
+        if not Path(model_path).exists():
+            spec = MODEL_SPECS.get(self._name)
+            if spec is not None:
+                model_path = ensure_model(self._name)
         print(f'loading PubMedBERT from {model_path} on {self.device}...')
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model     = AutoModel.from_pretrained(model_path)
