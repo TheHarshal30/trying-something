@@ -109,6 +109,16 @@ def main() -> None:
         raise FileNotFoundError(f"tokenizer_dir not found: {tokenizer_dir}")
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = "[PAD]"
+    if tokenizer.unk_token is None:
+        tokenizer.unk_token = "[UNK]"
+    if tokenizer.cls_token is None:
+        tokenizer.cls_token = "[CLS]"
+    if tokenizer.sep_token is None:
+        tokenizer.sep_token = "[SEP]"
+    if tokenizer.mask_token is None:
+        tokenizer.mask_token = "[MASK]"
     config = BertConfig(
         vocab_size=tokenizer.vocab_size,
         hidden_size=args.hidden_size,
