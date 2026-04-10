@@ -17,14 +17,14 @@ from tqdm import tqdm
 from transformers import (
     BertConfig,
     BertForMaskedLM,
-    BertTokenizer,
     DataCollatorForLanguageModeling,
+    PreTrainedTokenizerFast,
     get_linear_schedule_with_warmup,
 )
 
 
 class LineByLineIterableDataset(IterableDataset):
-    def __init__(self, corpus_path: Path, tokenizer: BertTokenizer, max_length: int):
+    def __init__(self, corpus_path: Path, tokenizer: PreTrainedTokenizerFast, max_length: int):
         self.corpus_path = corpus_path
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -108,7 +108,7 @@ def main() -> None:
     if not tokenizer_dir.exists():
         raise FileNotFoundError(f"tokenizer_dir not found: {tokenizer_dir}")
 
-    tokenizer = BertTokenizer.from_pretrained(str(tokenizer_dir))
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
     config = BertConfig(
         vocab_size=tokenizer.vocab_size,
         hidden_size=args.hidden_size,
