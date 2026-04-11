@@ -1,0 +1,558 @@
+# Project System Report
+
+## What This Project Is
+
+This repository is a **biomedical embedding benchmark and training workspace**.
+
+We are using it for a course project where the key rule is:
+
+**the models we compare must be trained from scratch**
+
+So the project has two major parts:
+
+1. **Training pipelines**
+   These produce embedding models from biomedical text.
+2. **Evaluation pipelines**
+   These test whether those embeddings are useful for downstream biomedical NLP tasks.
+
+In simple terms:
+
+- training answers: **"How do we build the model?"**
+- evaluation answers: **"How good are the embeddings after training?"**
+
+---
+
+## Main Components
+
+## 1. Benchmark / Evaluation Layer
+
+This lives under [`evaluation/`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation).
+
+Important files:
+
+- [`run_all.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/run_all.py)
+- [`eval_entity_linking.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_entity_linking.py)
+- [`eval_sts.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_sts.py)
+- [`eval_nli.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_nli.py)
+- [`assets.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/assets.py)
+- [`base_embedder.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/base_embedder.py)
+
+This layer does not train models. It only:
+
+- loads a chosen embedding model
+- loads the benchmark datasets
+- converts text into vectors
+- computes task-specific metrics
+- saves results
+
+### Core idea
+
+Every model follows the same interface:
+
+- `load(model_path)`
+- `encode(texts, batch_size=...)`
+
+Because of that, the benchmark can evaluate:
+
+- `word2vec`
+- `trainword2vec`
+- `transformer_scratch`
+- pretrained baselines like `pubmedbert` and `sapbert`
+
+without rewriting the task logic each time.
+
+---
+
+## 2. Scratch Word2Vec Pipeline
+
+This is the first scratch baseline and lives under:
+
+- [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec)
+
+Important files:
+
+- [`prepare_pubmed.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec/prepare_pubmed.py)
+- [`train.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec/train.py)
+- [`model.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec/model.py)
+
+### What it does
+
+1. reads raw PubMed XML or XML.GZ files
+2. extracts article abstracts
+3. cleans and tokenizes the text
+4. trains skip-gram Word2Vec embeddings
+5. saves them as `word2vec.bin`
+
+### Example
+
+Raw biomedical text:
+
+```text
+Patients with type 2 diabetes received insulin therapy.
+```
+
+After tokenization, Word2Vec learns vectors for words such as:
+
+- `patients`
+- `type`
+- `diabetes`
+- `insulin`
+- `therapy`
+
+To embed a sentence, the system averages the vectors of the words it knows.
+
+So for:
+
+```text
+type 2 diabetes
+```
+
+the final sentence vector is approximately:
+
+```text
+mean( vector("type"), vector("2"), vector("diabetes") )
+```
+
+This is simple and fast, but it does not understand context very deeply.
+
+---
+
+## 3. Alternative Word2Vec Pipeline
+
+A second Word2Vec training folder was added under:
+
+- [`TrainWord2Vec/TrainWord2Vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec)
+
+Important files:
+
+- [`01_train_word2vec.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/01_train_word2vec.py)
+- [`02_extract_umls_pairs.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/02_extract_umls_pairs.py)
+- [`03_align_ntxent.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/03_align_ntxent.py)
+
+### What it is intended to do
+
+This pipeline has two stages:
+
+1. train a baseline Word2Vec model on PubMed
+2. optionally improve it using UMLS synonym pairs with contrastive learning
+
+The UMLS-enhanced part is currently **on hold** because it requires `MRCONSO.RRF` from the UMLS release.
+
+So at the moment, only the baseline part of this pipeline has been benchmarked.
+
+---
+
+## 4. Scratch Transformer Pipeline
+
+This is the contextual model trained from scratch and lives under:
+
+- [`models/transformer_scratch/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch)
+
+Important files:
+
+- [`train_tokenizer.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/train_tokenizer.py)
+- [`train_mlm.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/train_mlm.py)
+- [`model.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/model.py)
+
+### What it does
+
+1. trains a tokenizer from scratch on PubMed abstracts
+2. builds a small BERT-style encoder from scratch
+3. trains it with masked language modeling
+4. saves the final encoder
+5. uses that encoder to produce embeddings for downstream evaluation
+
+### Architecture used
+
+- hidden size: `384`
+- layers: `6`
+- attention heads: `6`
+- intermediate size: `1536`
+- max sequence length: `128`
+- tokenizer vocab size: `30000`
+
+### Example of masked language modeling
+
+Original sentence:
+
+```text
+breast cancer treatment improves survival
+```
+
+Masked training example:
+
+```text
+breast [MASK] treatment improves survival
+```
+
+The model learns to predict:
+
+```text
+cancer
+```
+
+This forces it to learn context, not just isolated word statistics.
+
+That is the main reason transformers can capture meaning better than simple Word2Vec averaging.
+
+---
+
+## Data Flow
+
+## Step 1. Raw corpus
+
+The project uses **PubMed abstracts** as the main unsupervised training corpus.
+
+Typical path:
+
+- [`training_data/pubmed/raw/`](/home/harshal/nlp%20project%20/medical-entity-linking/training_data/pubmed/raw)
+
+These files contain PubMed XML article records.
+
+Each article can include:
+
+- PMID
+- title
+- abstract
+- journal metadata
+
+For our project, the main useful field is the **abstract text**.
+
+## Step 2. Processed corpus
+
+The Word2Vec prep script converts the raw XML into:
+
+- [`training_data/pubmed/processed/pubmed_abstracts.txt`](/home/harshal/nlp%20project%20/medical-entity-linking/training_data/pubmed/processed/pubmed_abstracts.txt)
+
+This file is essentially one training text per line.
+
+Example line:
+
+```text
+we studied gene expression in breast cancer tissue and observed altered pathways
+```
+
+This processed file is then reused by:
+
+- the scratch Word2Vec pipeline
+- the scratch transformer tokenizer training
+- the scratch transformer MLM training
+
+So one prepared corpus supports multiple models.
+
+---
+
+## How Evaluation Works
+
+The main command is:
+
+```bash
+python evaluation/run_all.py --model <model_name> --task all
+```
+
+Example:
+
+```bash
+python evaluation/run_all.py --model transformer_scratch --task all
+```
+
+### High-level runtime flow
+
+1. `run_all.py` reads CLI arguments
+2. `assets.py` ensures datasets and lookup tables exist
+3. `load_embedder()` loads the requested model
+4. the chosen task evaluators are executed
+5. each evaluator writes a JSON result file
+6. figures are generated
+7. a leaderboard is rebuilt
+
+### Important idea
+
+The evaluation code does **not** know how the model was trained.
+
+It only asks:
+
+- can the model produce vectors?
+- are those vectors useful for the task?
+
+That makes it easy to compare very different architectures fairly.
+
+---
+
+## Tasks We Evaluate
+
+## 1. Entity Linking
+
+File:
+
+- [`eval_entity_linking.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_entity_linking.py)
+
+### Goal
+
+Given a mention, retrieve the correct biomedical concept from a lookup table.
+
+### Example
+
+Mention:
+
+```text
+diabetes mellitus
+```
+
+Candidate KB entries might include many disease names. The system embeds:
+
+- the mention
+- every KB entry
+
+Then it computes cosine similarity and ranks the candidates.
+
+If the correct concept is the nearest one, that counts toward `Acc@1`.
+
+### Datasets used
+
+- `NCBI`
+- `BC5CDR-d`
+- `BC5CDR-c`
+
+### Metrics
+
+- `Acc@1`
+- `Acc@5`
+- `Acc@10`
+- `MRR`
+
+---
+
+## 2. Semantic Textual Similarity
+
+File:
+
+- [`eval_sts.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_sts.py)
+
+### Goal
+
+Check whether embedding similarity matches human similarity judgments.
+
+### Example
+
+Sentence 1:
+
+```text
+The patient was treated for breast cancer.
+```
+
+Sentence 2:
+
+```text
+Breast carcinoma therapy was administered to the patient.
+```
+
+A good model should assign similar embeddings to these sentences.
+
+### Dataset used
+
+- `BIOSSES`
+
+### Metrics
+
+- `Pearson r`
+- `Spearman r`
+
+Higher is better.
+
+---
+
+## 3. Natural Language Inference
+
+File:
+
+- [`eval_nli.py`](/home/harshal/nlp%20project%20/medical-entity-linking/evaluation/eval_nli.py)
+
+### Goal
+
+Check whether sentence-pair embeddings contain enough information for a classifier to predict the relationship between texts.
+
+### Example
+
+Premise:
+
+```text
+The trial reported improved survival with the new therapy.
+```
+
+Hypothesis:
+
+```text
+The therapy reduced patient survival.
+```
+
+This pair should behave like a contradiction.
+
+### Dataset used
+
+- `NLI4CT`
+
+### How this evaluation works
+
+The benchmark first encodes the texts, then trains a lightweight logistic regression classifier on top of those embeddings.
+
+So this task measures whether the embeddings contain useful information, not whether the base model was directly fine-tuned for NLI.
+
+### Metrics
+
+- `Accuracy`
+- `Macro F1`
+- `Majority baseline`
+
+---
+
+## Current Scratch Models Evaluated
+
+At the moment, the most relevant scratch-trained models are:
+
+1. `word2vec`
+   The original scratch Word2Vec baseline in [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec)
+
+2. `trainword2vec`
+   The Word2Vec baseline trained from the separate [`TrainWord2Vec/TrainWord2Vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec) pipeline
+
+3. `transformer_scratch`
+   The scratch transformer encoder from [`models/transformer_scratch/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch)
+
+---
+
+## Current Results
+
+These are the clean comparison results produced by the benchmark.
+
+## Entity Linking
+
+| Model | Dataset | Acc@1 | Acc@5 | Acc@10 | MRR |
+| --- | --- | --- | --- | --- | --- |
+| `word2vec` | `bc5cdr_c` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| `trainword2vec` | `bc5cdr_c` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| `transformer_scratch` | `bc5cdr_c` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| `word2vec` | `bc5cdr_d` | 0.5344 | 0.7022 | 0.7500 | 0.6048 |
+| `trainword2vec` | `bc5cdr_d` | 0.4604 | 0.6112 | 0.6934 | 0.5284 |
+| `transformer_scratch` | `bc5cdr_d` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| `word2vec` | `ncbi` | 0.3518 | 0.4899 | 0.5314 | 0.4084 |
+| `trainword2vec` | `ncbi` | 0.2889 | 0.4648 | 0.5276 | 0.3709 |
+| `transformer_scratch` | `ncbi` | 0.0000 | 0.0000 | 0.0013 | 0.0002 |
+
+### Interpretation
+
+- The original `word2vec` baseline is the strongest scratch model for disease entity linking.
+- `trainword2vec` is weaker than the earlier `word2vec` run.
+- `transformer_scratch` performed very poorly on the final entity-linking comparison.
+- All models failed on `BC5CDR-c`, which means chemical linking remains an open problem in the current setup.
+
+---
+
+## STS
+
+| Model | Dataset | Pearson r | Spearman r |
+| --- | --- | --- | --- |
+| `transformer_scratch` | `biosses` | -0.0326 | -0.0791 |
+| `word2vec` | `biosses` | -0.2804 | -0.1220 |
+| `trainword2vec` | `biosses` | -0.4905 | -0.3476 |
+
+### Interpretation
+
+- `transformer_scratch` is the best of the three on sentence similarity.
+- Both Word2Vec models are weaker, especially `trainword2vec`.
+- Even the best scratch model is still weak in absolute terms, so this remains a challenging task.
+
+---
+
+## NLI
+
+| Model | Dataset | Accuracy | Macro F1 | Majority baseline |
+| --- | --- | --- | --- | --- |
+| `transformer_scratch` | `nli4ct` | 0.4412 | 0.4412 | 0.5000 |
+| `word2vec` | `nli4ct` | 0.3735 | 0.3735 | 0.5000 |
+| `trainword2vec` | `nli4ct` | 0.3265 | 0.3265 | 0.5000 |
+
+### Interpretation
+
+- `transformer_scratch` is clearly the strongest scratch model on NLI.
+- Both Word2Vec variants are worse.
+- None of the scratch models beat the majority baseline yet, which shows that the task is still difficult for the current training scale.
+
+---
+
+## Overall Conclusions
+
+The current project shows a meaningful pattern:
+
+1. **Static embeddings and contextual embeddings behave differently**
+   The original `word2vec` is better for disease retrieval, while `transformer_scratch` is better for semantic tasks.
+
+2. **The training pipeline matters**
+   The second Word2Vec pipeline (`trainword2vec`) did not beat the original Word2Vec baseline, which suggests that preprocessing, tokenization, corpus handling, or training choices strongly affect performance.
+
+3. **Longer or different transformer training changes task behavior**
+   The scratch transformer improved the sentence-level tasks more than the retrieval tasks.
+
+4. **Chemical entity linking is still unsolved**
+   All current scratch models failed on `BC5CDR-c`.
+
+---
+
+## Practical Summary
+
+If someone asks what this system does in one sentence:
+
+**It trains biomedical embedding models from scratch, plugs them into a shared benchmark, and compares how well those embeddings support entity linking, sentence similarity, and clinical-trial inference tasks.**
+
+If someone asks which model currently looks best:
+
+- for **entity linking**: `word2vec`
+- for **STS and NLI**: `transformer_scratch`
+
+If someone asks what is unfinished:
+
+- UMLS-enhanced Word2Vec alignment is still pending UMLS access
+- chemical entity linking remains poor
+- scratch models are still behind strong pretrained biomedical baselines
+
+---
+
+## Useful Commands
+
+Train the original scratch Word2Vec:
+
+```bash
+python models/word2vec/train.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --output_dir models/word2vec/weights
+```
+
+Train tokenizer for the scratch transformer:
+
+```bash
+python models/transformer_scratch/train_tokenizer.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --output_dir models/transformer_scratch/weights/tokenizer \
+  --vocab_size 30000
+```
+
+Train the scratch transformer:
+
+```bash
+python models/transformer_scratch/train_mlm.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --tokenizer_dir models/transformer_scratch/weights/tokenizer \
+  --output_dir models/transformer_scratch/weights/final
+```
+
+Run full benchmark:
+
+```bash
+python evaluation/run_all.py --model transformer_scratch --task all
+```
+
+Create a clean comparison table:
+
+```bash
+python evaluation/compare_results.py --models word2vec trainword2vec transformer_scratch
+```
