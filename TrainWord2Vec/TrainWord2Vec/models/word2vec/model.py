@@ -1,5 +1,7 @@
-import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../evaluation'))
+import os
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../../evaluation"))
 
 import numpy as np
 from gensim.models import KeyedVectors

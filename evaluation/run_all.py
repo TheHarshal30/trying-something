@@ -21,6 +21,7 @@ Usage:
 
 import json
 import argparse
+import importlib.util
 from pathlib import Path
 from datetime import date
 
@@ -74,6 +75,19 @@ def load_embedder(model_name: str):
         from model import Word2VecEmbedder
         embedder = Word2VecEmbedder()
         embedder.load(str(ROOT / 'models' / 'word2vec'))
+        return embedder
+
+    elif model_name == 'trainword2vec':
+        model_dir = ROOT / 'TrainWord2Vec' / 'TrainWord2Vec' / 'models' / 'word2vec'
+        model_file = model_dir / 'model.py'
+        spec = importlib.util.spec_from_file_location('trainword2vec_model', model_file)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        embedder = module.Word2VecEmbedder()
+        embedder._name = 'trainword2vec'
+        embedder.load(str(model_dir))
         return embedder
 
     elif model_name == 'transformer_scratch':
