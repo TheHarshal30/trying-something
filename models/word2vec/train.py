@@ -19,6 +19,7 @@ from pathlib import Path
 from gensim.models import Word2Vec
 from gensim.models.callbacks import CallbackAny2Vec
 
+from tfidf import compute_tfidf, save_tfidf
 
 LOGGER = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sample", type=float, default=1e-4)
+    parser.add_argument("--disable_tfidf", action="store_true")
     args = parser.parse_args()
 
     corpus_path = Path(args.corpus_path)
@@ -132,8 +134,18 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     weights_path = output_dir / "word2vec.bin"
     metadata_path = output_dir / "training_metadata.json"
+    tfidf_path = output_dir / "tfidf_idf.json"
 
     model.wv.save_word2vec_format(weights_path, binary=True)
+
+    tfidf_terms = 0
+    if not args.disable_tfidf:
+        LOGGER.info("computing TF-IDF weights for weighted pooling")
+        tfidf_start = time.time()
+        idf = compute_tfidf(CorpusIterator(corpus_path))
+        save_tfidf(idf, tfidf_path)
+        tfidf_terms = len(idf)
+        LOGGER.info("TF-IDF saved in %.2f seconds to %s", time.time() - tfidf_start, tfidf_path)
 
     metadata = {
         "corpus_path": str(corpus_path),
@@ -148,6 +160,8 @@ def main() -> None:
         "workers": args.workers,
         "seed": args.seed,
         "vocab_size": len(model.wv),
+        "tfidf_enabled": not args.disable_tfidf,
+        "tfidf_terms": tfidf_terms,
         "runtime_sec": round(total_elapsed, 2),
     }
     with open(metadata_path, "w", encoding="utf-8") as handle:

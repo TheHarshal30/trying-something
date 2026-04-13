@@ -98,6 +98,15 @@ def load_embedder(model_name: str):
         embedder.load(str(ROOT / 'models' / 'transformer_scratch'))
         return embedder
 
+    elif model_name == 'transformer_scratch_simcse':
+        import sys
+        sys.path.append(str(ROOT / 'models' / 'transformer_scratch'))
+        from model import TransformerScratchEmbedder
+        embedder = TransformerScratchEmbedder()
+        embedder._name = 'transformer_scratch_simcse'
+        embedder.load(str(ROOT / 'models' / 'transformer_scratch' / 'weights' / 'final_simcse'))
+        return embedder
+
     # elif model_name == 'word2vec_umls':
     #     from word2vec_umls_embedder import Word2VecUMLSEmbedder
     #     embedder = Word2VecUMLSEmbedder()

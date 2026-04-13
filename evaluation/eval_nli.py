@@ -32,12 +32,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, classification_report,
                               confusion_matrix)
 from sklearn.preprocessing import LabelEncoder
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.pipeline import Pipeline
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from assets import ensure_nli_assets
 
@@ -100,9 +100,22 @@ def build_features(emb_a: np.ndarray, emb_b: np.ndarray) -> np.ndarray:
     Returns:
         (N, 4*dim) feature matrix
     """
-    diff    = emb_a - emb_b          # difference
-    product = emb_a * emb_b          # elementwise product
-    return np.hstack([emb_a, emb_b, diff, product])
+    diff = np.abs(emb_a - emb_b)
+    return np.hstack([emb_a, emb_b, diff])
+
+
+class NLIMLP(nn.Module):
+    def __init__(self, dim: int, num_classes: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(3 * dim, dim),
+            nn.ReLU(),
+            nn.Linear(dim, num_classes),
+        )
+
+    def forward(self, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([u, v, torch.abs(u - v)], dim=-1)
+        return self.net(x)
 
 
 # ─── main evaluation function ─────────────────────────────────────────────────
@@ -112,7 +125,11 @@ def evaluate(
     dataset     : str  = 'nli4ct',
     batch_size  : int  = 32,
     save_figures: bool = True,
-    max_iter    : int  = 1000
+    max_iter    : int  = 1000,
+    classifier  : str  = 'mlp',
+    mlp_epochs  : int  = 25,
+    mlp_lr      : float = 1e-3,
+    mlp_batch_size: int = 128,
 ):
     """
     Run NLI evaluation for one model.
@@ -174,20 +191,57 @@ def evaluate(
     print(f'\nfeature shape: {X_train.shape}')
     print(f'classes: {le.classes_}')
 
-    # ── train logistic regression ──
-    print(f'\ntraining logistic regression classifier...')
+    # ── train classifier ──
+    print(f'\ntraining {classifier} classifier...')
     t1  = time.time()
-    clf = Pipeline([
-    ('scaler', StandardScaler()),
-    ('lr', LogisticRegression(max_iter=2000, random_state=42, C=1.0))])
-    clf.fit(X_train, y_train)
+    if classifier == 'mlp':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = NLIMLP(dim=train_emb_a.shape[1], num_classes=len(le.classes_)).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=mlp_lr)
+        loss_fn = nn.CrossEntropyLoss()
 
-  
+        train_ds = TensorDataset(
+            torch.from_numpy(train_emb_a.astype(np.float32)),
+            torch.from_numpy(train_emb_b.astype(np.float32)),
+            torch.from_numpy(y_train.astype(np.int64)),
+        )
+        train_loader = DataLoader(train_ds, batch_size=mlp_batch_size, shuffle=True)
+
+        model.train()
+        for epoch in range(mlp_epochs):
+            running_loss = 0.0
+            for batch_a, batch_b, batch_y in train_loader:
+                batch_a = batch_a.to(device)
+                batch_b = batch_b.to(device)
+                batch_y = batch_y.to(device)
+
+                logits = model(batch_a, batch_b)
+                loss = loss_fn(logits, batch_y)
+                if torch.isnan(loss):
+                    print("NaN detected, stopping training")
+                    break
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                running_loss += loss.item()
+
+            if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == mlp_epochs - 1:
+                print(f'epoch {epoch + 1}/{mlp_epochs} | loss {running_loss / max(len(train_loader), 1):.4f}')
+
+        model.eval()
+        with torch.no_grad():
+            test_a = torch.from_numpy(test_emb_a.astype(np.float32)).to(device)
+            test_b = torch.from_numpy(test_emb_b.astype(np.float32)).to(device)
+            y_pred = model(test_a, test_b).argmax(dim=1).cpu().numpy()
+    else:
+        raise ValueError(f'unknown classifier: {classifier}')
+
     train_time = time.time() - t1
     print(f'trained in {train_time:.1f}s')
 
     # ── evaluate ──
-    y_pred = clf.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     report   = classification_report(
         y_test, y_pred,
@@ -214,6 +268,7 @@ def evaluate(
         'macro_f1'        : round(report['macro avg']['f1-score'], 4),
         'num_train'       : len(train_df),
         'num_test'        : len(test_df),
+        'classifier'      : classifier,
         'runtime_sec'     : round(total_time, 2),
         'date'            : str(date.today()),
     }
@@ -291,6 +346,10 @@ if __name__ == '__main__':
                         help='nli4ct (default: nli4ct)')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--max_iter',   type=int, default=1000)
+    parser.add_argument('--classifier', default='mlp')
+    parser.add_argument('--mlp_epochs', type=int, default=25)
+    parser.add_argument('--mlp_lr', type=float, default=1e-3)
+    parser.add_argument('--mlp_batch_size', type=int, default=128)
     args = parser.parse_args()
 
     # ── load embedder ──
@@ -313,4 +372,8 @@ if __name__ == '__main__':
         dataset    = args.dataset,
         batch_size = args.batch_size,
         max_iter   = args.max_iter,
+        classifier = args.classifier,
+        mlp_epochs = args.mlp_epochs,
+        mlp_lr = args.mlp_lr,
+        mlp_batch_size = args.mlp_batch_size,
     )

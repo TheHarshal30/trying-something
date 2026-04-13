@@ -24,9 +24,9 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics.pairwise import cosine_similarity
 
 from assets import ensure_entity_linking_assets
+from reranker import RerankerConfig, rerank_candidates, train_reranker
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -189,6 +189,15 @@ def compute_metrics(ranks: list[int], k_values: list[int] = [1, 5, 10]) -> dict:
     return metrics
 
 
+def normalize_embeddings(x: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(x, axis=1, keepdims=True)
+    return x / np.clip(norms, a_min=1e-8, a_max=None)
+
+
+def cosine_scores(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return normalize_embeddings(a) @ normalize_embeddings(b).T
+
+
 # ─── main evaluation function ─────────────────────────────────────────────────
 
 def evaluate(
@@ -197,7 +206,11 @@ def evaluate(
     split      : str = 'test',
     batch_size : int = 32,
     top_k      : int = 10,
-    save_figures: bool = True
+    save_figures: bool = True,
+    use_reranker: bool = True,
+    retrieval_top_k: int = 50,
+    reranker_epochs: int = 8,
+    reranker_hard_negatives: int = 8,
 ):
     """
     Run entity linking evaluation for one model + dataset combo.
@@ -259,6 +272,30 @@ def evaluate(
     mention_embed_time = time.time() - t0
     print(f'mentions embedded in {mention_embed_time:.1f}s')
 
+    reranker = None
+    if use_reranker:
+        print('\ntraining entity-linking reranker...')
+        if dataset == 'ncbi':
+            train_mentions = load_ncbi('train')
+        elif dataset == 'bc5cdr_d':
+            train_mentions = load_bc5cdr('train', entity_type='Disease')
+        else:
+            train_mentions = load_bc5cdr('train', entity_type='Chemical')
+
+        train_texts = [m['text'] for m in train_mentions]
+        train_gold = [m['mesh_id'] for m in train_mentions]
+        train_embeds = embedder.encode(train_texts, batch_size=batch_size)
+        reranker = train_reranker(
+            mention_embeddings=train_embeds,
+            gold_ids=train_gold,
+            kb_embeddings=kb_embeddings,
+            kb_ids=kb_ids,
+            config=RerankerConfig(
+                epochs=reranker_epochs,
+                hard_negatives=reranker_hard_negatives,
+            ),
+        )
+
     # ── cosine similarity + ranking ──
     print('\ncomputing similarities and ranks...')
     t0 = time.time()
@@ -273,11 +310,20 @@ def evaluate(
         chunk_gold = gold_ids[i : i + chunk_size]
 
         # (chunk_size, KB_size)
-        sims = cosine_similarity(chunk, kb_embeddings)
+        sims = cosine_scores(chunk, kb_embeddings)
 
         for j, (sim_row, gold_id) in enumerate(zip(sims, chunk_gold)):
-            # argsort descending
-            sorted_indices = np.argsort(sim_row)[::-1][:top_k]
+            retrieval_indices = np.argsort(sim_row)[::-1][:max(top_k, retrieval_top_k)]
+            if reranker is not None:
+                reranked = rerank_candidates(
+                    model=reranker,
+                    mention_embedding=chunk[j],
+                    candidate_embeddings=kb_embeddings[retrieval_indices],
+                    candidate_indices=retrieval_indices,
+                )
+                sorted_indices = reranked[:top_k]
+            else:
+                sorted_indices = retrieval_indices[:top_k]
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
             top1_sims.append(sim_row[sorted_indices[0]])
 
@@ -303,6 +349,7 @@ def evaluate(
         'total_mentions' : len(mentions),
         'found_in_top_k' : int(sum(1 for r in ranks if r > 0)),
         'not_found'      : int(sum(1 for r in ranks if r == 0)),
+        'use_reranker'   : use_reranker,
         'runtime_sec'    : round(total_time, 2),
         'date'           : str(date.today()),
     }
@@ -373,6 +420,9 @@ if __name__ == '__main__':
     parser.add_argument('--split',   default='test',
                         help='train | dev | test (default: test)')
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--disable_reranker', action='store_true')
+    parser.add_argument('--retrieval_top_k', type=int, default=50)
+    parser.add_argument('--reranker_epochs', type=int, default=8)
     args = parser.parse_args()
 
     # ── load the right embedder based on --model flag ──
@@ -399,4 +449,7 @@ if __name__ == '__main__':
             dataset    = ds,
             split      = args.split,
             batch_size = args.batch_size,
+            use_reranker = not args.disable_reranker,
+            retrieval_top_k = args.retrieval_top_k,
+            reranker_epochs = args.reranker_epochs,
         )

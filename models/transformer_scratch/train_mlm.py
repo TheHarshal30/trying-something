@@ -93,6 +93,8 @@ def main() -> None:
     parser.add_argument("--save_every_steps", type=int, default=5000)
     parser.add_argument("--log_every_steps", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--pooling_strategy", default="last4_mean",
+                        choices=["cls", "mean", "last4_mean"])
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -206,8 +208,12 @@ def main() -> None:
                 dtype=torch.bfloat16 if use_bf16 else torch.float16,
                 enabled=use_cuda_amp,
             ):
-                outputs = model(**batch)
+                outputs = model(**batch, output_hidden_states=True)
                 loss = outputs.loss / args.gradient_accumulation_steps
+
+            if torch.isnan(loss):
+                print("NaN detected, stopping training")
+                break
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -217,6 +223,10 @@ def main() -> None:
             running_loss += loss.item() * args.gradient_accumulation_steps
 
             if step % args.gradient_accumulation_steps == 0:
+                if scaler.is_enabled():
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
                 if scaler.is_enabled():
                     scaler.step(optimizer)
                     scaler.update()
@@ -228,13 +238,16 @@ def main() -> None:
 
                 if optimizer_step % args.log_every_steps == 0:
                     avg_loss = running_loss / args.log_every_steps
+                    emb_norm = outputs.hidden_states[-1].norm(dim=-1).mean().item()
                     progress.set_postfix(
                         loss=f"{avg_loss:.4f}",
                         lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                        norm=f"{emb_norm:.4f}",
                     )
                     print(
                         f"step {optimizer_step}/{total_steps} | "
                         f"loss {avg_loss:.4f} | "
+                        f"norm {emb_norm:.4f} | "
                         f"lr {scheduler.get_last_lr()[0]:.2e}"
                     )
                     running_loss = 0.0
@@ -256,6 +269,8 @@ def main() -> None:
     total_elapsed = time.time() - train_start
     model.save_pretrained(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
+    with open(output_dir / "embedding_config.json", "w", encoding="utf-8") as handle:
+        json.dump({"pooling_strategy": args.pooling_strategy}, handle, indent=2)
 
     metadata = {
         "corpus_path": str(corpus_path),
@@ -273,6 +288,7 @@ def main() -> None:
         "gradient_accumulation_steps": args.gradient_accumulation_steps,
         "mlm_probability": args.mlm_probability,
         "seed": args.seed,
+        "pooling_strategy": args.pooling_strategy,
         "total_sequences": total_sequences,
         "total_optimizer_steps": optimizer_step,
         "runtime_sec": round(total_elapsed, 2),

@@ -6,6 +6,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../../../evaluation"))
 import numpy as np
 from gensim.models import KeyedVectors
 from base_embedder import BaseEmbedder
+import json
 
 
 class Word2VecEmbedder(BaseEmbedder):
@@ -18,6 +19,7 @@ class Word2VecEmbedder(BaseEmbedder):
     def __init__(self):
         self.wv    = None        # gensim KeyedVectors
         self._name = 'word2vec'
+        self.idf   = None
 
     # ------------------------------------------------------------------
     # load
@@ -28,6 +30,7 @@ class Word2VecEmbedder(BaseEmbedder):
         Expects: <model_path>/weights/word2vec.bin  (Word2Vec binary format)
         """
         weights_file = os.path.join(model_path, 'weights', 'word2vec.bin')
+        tfidf_file = os.path.join(model_path, 'weights', 'tfidf_idf.json')
         if not os.path.exists(weights_file):
             raise FileNotFoundError(
                 f'weights not found at {weights_file}\n'
@@ -36,6 +39,10 @@ class Word2VecEmbedder(BaseEmbedder):
         print(f'[word2vec] loading from {weights_file} ...')
         self.wv = KeyedVectors.load_word2vec_format(weights_file, binary=True)
         print(f'[word2vec] ready — vocab: {len(self.wv):,}  dim: {self.wv.vector_size}')
+        if os.path.exists(tfidf_file):
+            with open(tfidf_file, "r", encoding="utf-8") as handle:
+                self.idf = {str(k): float(v) for k, v in json.load(handle).items()}
+            print(f'[word2vec] loaded TF-IDF weights from {tfidf_file}')
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -47,6 +54,19 @@ class Word2VecEmbedder(BaseEmbedder):
         Returns zero vector for fully OOV input.
         """
         tokens  = text.lower().split()
+        if self.idf:
+            weighted_vectors = []
+            weights = []
+            for token in tokens:
+                if token not in self.wv:
+                    continue
+                weight = float(self.idf.get(token, 1.0))
+                weighted_vectors.append(self.wv[token] * weight)
+                weights.append(weight)
+            if not weighted_vectors:
+                return np.zeros(self.wv.vector_size, dtype=np.float32)
+            return (np.sum(weighted_vectors, axis=0) / max(np.sum(weights), 1e-8)).astype(np.float32)
+
         vectors = [self.wv[t] for t in tokens if t in self.wv]
 
         if not vectors:
