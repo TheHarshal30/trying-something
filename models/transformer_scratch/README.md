@@ -1,6 +1,11 @@
 # Scratch Transformer Pipeline
 
-This folder contains the next model after the Word2Vec baseline: a small BERT-style encoder trained from scratch on processed PubMed text.
+This folder contains the contextual biomedical encoder trained from scratch on processed PubMed text.
+
+The pipeline now has **two stages**:
+
+1. masked language modeling (MLM) pretraining
+2. optional unsupervised SimCSE-style contrastive fine-tuning
 
 If you trained the tokenizer before commit `dc72038`, delete the old tokenizer directory and retrain it after pulling the latest code. The updated script saves a Hugging Face-compatible tokenizer more reliably on some server setups.
 
@@ -43,9 +48,43 @@ python models/transformer_scratch/train_mlm.py \
   --batch_size 64 \
   --epochs 3 \
   --learning_rate 5e-4 \
+  --pooling_strategy last4_mean \
   --save_every_steps 5000 \
   --log_every_steps 100
 ```
+
+### 3. Optional SimCSE sentence-encoder fine-tuning
+
+This stage starts from the MLM checkpoint and improves sentence embeddings using unsupervised contrastive learning:
+
+- same sentence + two dropout passes = positive pair
+- other sentences in the batch = negatives
+
+```bash
+python models/transformer_scratch/train_simcse.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --input_dir models/transformer_scratch/weights/final \
+  --output_dir models/transformer_scratch/weights/final_simcse \
+  --batch_size 64 \
+  --epochs 3 \
+  --learning_rate 2e-5 \
+  --temperature 0.05 \
+  --pooling_strategy last4_mean
+```
+
+## Pooling options
+
+The embedder now supports three ablation-friendly pooling strategies:
+
+- `cls`
+- `mean`
+- `last4_mean`
+
+Recommended default:
+
+- `last4_mean`
+
+This usually gives more stable sentence embeddings than plain CLS pooling.
 
 ## Notes
 
@@ -53,13 +92,37 @@ python models/transformer_scratch/train_mlm.py \
 - On an A100, `bfloat16` autocast should be used automatically when supported.
 - Checkpoints are written under `models/transformer_scratch/weights/checkpoint_step_*`.
 - Final model and tokenizer are written under `models/transformer_scratch/weights/final`.
+- SimCSE checkpoints are written under `models/transformer_scratch/weights/final_simcse`.
+- Both MLM and SimCSE loops include gradient clipping and NaN checks for safety.
+- `embedding_config.json` stores the pooling strategy used at inference time.
 
 ## Evaluation integration
 
 The embedder implementation is in `models/transformer_scratch/model.py`.
 
-Once training is complete, we can register `transformer_scratch` in `evaluation/run_all.py` and benchmark it against:
+Available benchmark model names:
+
+- `transformer_scratch`
+- `transformer_scratch_simcse`
+
+Example:
+
+```bash
+python evaluation/run_all.py --model transformer_scratch --task all
+python evaluation/run_all.py --model transformer_scratch_simcse --task all
+```
+
+## Why this upgrade matters
+
+MLM teaches the encoder to predict masked tokens from context.
+
+SimCSE then reshapes the embedding space so that:
+
+- two views of the same sentence are close
+- different sentences are pushed apart
+
+That makes the model much more useful as an actual sentence encoder for:
 
 - STS
-- NLI
-- Entity Linking
+- entity linking retrieval
+- downstream pair classification

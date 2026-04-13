@@ -57,6 +57,7 @@ Because of that, the benchmark can evaluate:
 - `word2vec`
 - `trainword2vec`
 - `transformer_scratch`
+- `transformer_scratch_simcse`
 - pretrained baselines like `pubmedbert` and `sapbert`
 
 without rewriting the task logic each time.
@@ -81,7 +82,8 @@ Important files:
 2. extracts article abstracts
 3. cleans and tokenizes the text
 4. trains skip-gram Word2Vec embeddings
-5. saves them as `word2vec.bin`
+5. computes optional TF-IDF weights for tokens
+6. saves them as `word2vec.bin` plus `tfidf_idf.json`
 
 ### Example
 
@@ -99,7 +101,7 @@ After tokenization, Word2Vec learns vectors for words such as:
 - `insulin`
 - `therapy`
 
-To embed a sentence, the system averages the vectors of the words it knows.
+To embed a sentence, the system now prefers **TF-IDF-weighted pooling** when TF-IDF weights are available.
 
 So for:
 
@@ -107,13 +109,19 @@ So for:
 type 2 diabetes
 ```
 
-the final sentence vector is approximately:
+the basic sentence vector is approximately:
 
 ```text
 mean( vector("type"), vector("2"), vector("diabetes") )
 ```
 
-This is simple and fast, but it does not understand context very deeply.
+With TF-IDF weighting, the system instead does something closer to:
+
+```text
+sum( idf(token) * vector(token) ) / sum( idf(token) )
+```
+
+This is still a static embedding model, but it gives more importance to informative biomedical tokens.
 
 ---
 
@@ -152,6 +160,7 @@ Important files:
 
 - [`train_tokenizer.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/train_tokenizer.py)
 - [`train_mlm.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/train_mlm.py)
+- [`train_simcse.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/train_simcse.py)
 - [`model.py`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch/model.py)
 
 ### What it does
@@ -159,8 +168,9 @@ Important files:
 1. trains a tokenizer from scratch on PubMed abstracts
 2. builds a small BERT-style encoder from scratch
 3. trains it with masked language modeling
-4. saves the final encoder
-5. uses that encoder to produce embeddings for downstream evaluation
+4. optionally fine-tunes it with SimCSE-style contrastive learning
+5. saves the final encoder
+6. uses that encoder to produce embeddings for downstream evaluation
 
 ### Architecture used
 
@@ -194,6 +204,34 @@ cancer
 This forces it to learn context, not just isolated word statistics.
 
 That is the main reason transformers can capture meaning better than simple Word2Vec averaging.
+
+### Example of SimCSE-style contrastive learning
+
+In the new contrastive stage, the same sentence is passed through the encoder twice with dropout:
+
+```text
+Sentence A -> encoder -> z1
+Sentence A -> encoder -> z2
+```
+
+Because dropout changes the internal activations, `z1` and `z2` are slightly different views of the same sentence.
+
+The objective then:
+
+- pulls `z1` and `z2` together
+- pushes them away from embeddings of other sentences in the batch
+
+This improves the geometry of the embedding space and makes the transformer act more like a real sentence encoder.
+
+### Pooling strategies
+
+The transformer embedder now supports:
+
+- `cls`
+- `mean`
+- `last4_mean`
+
+The default is `last4_mean`, which usually gives more stable sentence embeddings than plain CLS pooling.
 
 ---
 
@@ -394,9 +432,17 @@ This pair should behave like a contradiction.
 
 ### How this evaluation works
 
-The benchmark first encodes the texts, then trains a lightweight logistic regression classifier on top of those embeddings.
+The benchmark first encodes the texts, then trains a small neural classifier on top of those embeddings.
 
-So this task measures whether the embeddings contain useful information, not whether the base model was directly fine-tuned for NLI.
+The current classifier uses:
+
+- embedding of sentence A
+- embedding of sentence B
+- absolute difference `|A - B|`
+
+and predicts the label with a small MLP.
+
+So this task still measures whether the embeddings contain useful information, not whether the base model was directly fine-tuned for NLI.
 
 ### Metrics
 
@@ -418,6 +464,9 @@ At the moment, the most relevant scratch-trained models are:
 
 3. `transformer_scratch`
    The scratch transformer encoder from [`models/transformer_scratch/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch)
+
+4. `transformer_scratch_simcse`
+   The SimCSE-fine-tuned version of the scratch transformer encoder
 
 ---
 
@@ -445,6 +494,7 @@ These are the clean comparison results produced by the benchmark.
 - The original `word2vec` baseline is still the strongest scratch model on `NCBI`.
 - `trainword2vec` is weaker than the earlier `word2vec` run.
 - The lower-learning-rate transformer run recovered the earlier entity-linking collapse and became competitive with Word2Vec.
+- The entity-linking pipeline is now stronger than before because it supports reranking after initial cosine retrieval.
 - All models failed on `BC5CDR-c`, which means chemical linking remains an open problem in the current setup.
 
 ---
@@ -462,6 +512,7 @@ These are the clean comparison results produced by the benchmark.
 - `transformer_scratch` is clearly the best of the three on sentence similarity.
 - Both Word2Vec models are weaker, especially `trainword2vec`.
 - The lower-learning-rate transformer run improved STS substantially compared with earlier transformer checkpoints.
+- The new SimCSE stage was added specifically to push sentence-level quality further in future ablations.
 
 ---
 
@@ -494,7 +545,10 @@ The current project shows a meaningful pattern:
 3. **Transformer training is highly sensitive to optimization settings**
    A lower learning rate substantially improved the transformer on STS and restored useful entity-linking performance after an earlier collapse.
 
-4. **Chemical entity linking is still unsolved**
+4. **The system has now moved beyond naive baselines**
+   The codebase now includes contrastive sentence-encoder training, TF-IDF weighting, reranking, and a neural NLI probe, making it a more serious representation-learning system.
+
+5. **Chemical entity linking is still unsolved**
    All current scratch models failed on `BC5CDR-c`.
 
 ---
@@ -515,6 +569,7 @@ If someone asks what is unfinished:
 - UMLS-enhanced Word2Vec alignment is still pending UMLS access
 - chemical entity linking remains poor
 - scratch models are still behind strong pretrained biomedical baselines
+- the new SimCSE and reranking upgrades still need full ablation runs on the server
 
 ---
 
@@ -546,10 +601,25 @@ python models/transformer_scratch/train_mlm.py \
   --output_dir models/transformer_scratch/weights/final
 ```
 
+Fine-tune the transformer with SimCSE:
+
+```bash
+python models/transformer_scratch/train_simcse.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --input_dir models/transformer_scratch/weights/final \
+  --output_dir models/transformer_scratch/weights/final_simcse
+```
+
 Run full benchmark:
 
 ```bash
 python evaluation/run_all.py --model transformer_scratch --task all
+```
+
+Run SimCSE benchmark:
+
+```bash
+python evaluation/run_all.py --model transformer_scratch_simcse --task all
 ```
 
 Create a clean comparison table:

@@ -1,6 +1,11 @@
 # Word2Vec Scratch Baseline
 
-This folder now contains a scratch-training baseline for your course project.
+This folder contains the main scratch Word2Vec baseline used in the project.
+
+The baseline now supports:
+
+- standard skip-gram training
+- optional TF-IDF-weighted sentence pooling during inference
 
 ## Recommended training dataset
 
@@ -61,10 +66,16 @@ python models/word2vec/train.py \
   --workers 8
 ```
 
-The trained vectors are saved to:
+The trained outputs are saved to:
 
 ```bash
 models/word2vec/weights/word2vec.bin
+```
+
+and, unless disabled:
+
+```bash
+models/word2vec/weights/tfidf_idf.json
 ```
 
 ## Recommended first baseline settings
@@ -78,6 +89,43 @@ models/word2vec/weights/word2vec.bin
 
 These are reasonable first-pass values for a domain-specific static embedding baseline.
 
+## TF-IDF weighted pooling
+
+Previously, a sentence was embedded by simple averaging:
+
+```text
+mean(word vectors)
+```
+
+Now the embedder can also use TF-IDF weighting:
+
+```text
+sum(idf(token) * vector(token)) / sum(idf(token))
+```
+
+Why this helps:
+
+- common low-information words get downweighted
+- rarer biomedical terms get more influence
+- sentence similarity and retrieval can improve without changing the underlying Word2Vec vectors
+
+Example:
+
+```text
+type 2 diabetes treatment
+```
+
+With TF-IDF weighting, words like `diabetes` and `treatment` matter more than generic words that appear in many documents.
+
+If you want a pure no-TF-IDF ablation:
+
+```bash
+python models/word2vec/train.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --output_dir models/word2vec/weights \
+  --disable_tfidf
+```
+
 ## How this connects to evaluation
 
 The benchmark loader in `models/word2vec/model.py` reads:
@@ -86,4 +134,16 @@ The benchmark loader in `models/word2vec/model.py` reads:
 models/word2vec/weights/word2vec.bin
 ```
 
-So once training finishes, we can wire this model into the evaluator registry and benchmark it against the downstream tasks.
+and automatically uses `tfidf_idf.json` if it is present.
+
+So once training finishes, the model can be benchmarked against:
+
+- entity linking
+- STS
+- NLI
+
+Example:
+
+```bash
+python evaluation/run_all.py --model word2vec --task all
+```
