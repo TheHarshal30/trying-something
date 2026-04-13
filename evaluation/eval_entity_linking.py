@@ -99,7 +99,7 @@ def is_relaxed_match(pred_terms: list[str], gold_term: str) -> bool:
 
 # ─── KB loader ────────────────────────────────────────────────────────────────
 
-def load_kb(kb_path: Path, entity_type: str) -> dict[str, str]:
+def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, str]]:
     """
     Load CTD KB file into {mesh_id: canonical_name} dict.
     entity_type: 'Disease' or 'Chemical'
@@ -126,22 +126,29 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, str]:
         lambda x: x.split(':')[-1] if isinstance(x, str) else x
     )
 
-    kb = {}
+    kb_ids: list[str] = []
+    kb_terms: list[str] = []
+    id_to_name: dict[str, str] = {}
+
     for _, row in df.iterrows():
         mid  = row['clean_id']
         name = row[name_col]
         if isinstance(mid, str) and isinstance(name, str):
-            kb[mid] = name.lower().strip()
+            norm_name = normalize(name)
+            if norm_name:
+                kb_ids.append(mid)
+                kb_terms.append(norm_name)
+                id_to_name.setdefault(mid, norm_name)
 
-            # also add synonyms as alternative surface forms
             if isinstance(row.get('Synonyms'), str):
                 for syn in row['Synonyms'].split('|'):
-                    syn = syn.strip().lower()
+                    syn = normalize(syn)
                     if syn:
-                        kb.setdefault(mid, syn)
+                        kb_ids.append(mid)
+                        kb_terms.append(syn)
 
-    print(f'loaded KB: {len(kb)} entries from {kb_path.name}')
-    return kb
+    print(f'loaded KB: {len(kb_terms)} entries from {kb_path.name}')
+    return {"ids": kb_ids, "terms": kb_terms, "id_to_name": id_to_name}
 
 
 # ─── dataset loaders ──────────────────────────────────────────────────────────
@@ -312,8 +319,9 @@ def evaluate(
 
     # ── load KB ──
     kb = load_kb(kb_path, entity_type)
-    kb_ids    = list(kb.keys())
-    kb_names  = list(kb.values())
+    kb_ids    = kb["ids"]
+    kb_names  = kb["terms"]
+    id_to_name = kb["id_to_name"]
 
     print("Sample gold IDs:")
     for i in range(min(10, len(mentions))):
@@ -326,6 +334,10 @@ def evaluate(
     if mentions and kb_ids:
         print(type(mentions[0]["mesh_id"]), type(kb_ids[0]))
 
+    print("\n[DEBUG] Sample KB terms:")
+    for i in range(min(10, len(kb_names))):
+        print(kb_names[i])
+
     # ── embed KB ──
     print(f'\nembedding KB ({len(kb_names)} terms)...')
     t0 = time.time()
@@ -334,7 +346,7 @@ def evaluate(
     print(f'KB embedded in {kb_embed_time:.1f}s — shape: {kb_embeddings.shape}')
 
     # ── embed mentions ──
-    mention_texts = [m['text'] for m in mentions]
+    mention_texts = [normalize(m['text']) for m in mentions]
     gold_ids      = [m['mesh_id'] for m in mentions]
 
     if gold_ids and kb_ids:
@@ -411,7 +423,7 @@ def evaluate(
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
             top_terms      = [kb_names[idx] for idx in sorted_indices]
             mention = mention_texts[i + j]
-            gold_term = kb.get(gold_id, mention)
+            gold_term = id_to_name.get(gold_id, mention)
 
             if debug_el and debug_count < debug_max:
                 print("mention:", mention)
@@ -498,6 +510,15 @@ def evaluate(
     print(f'  missing gold IDs : {result["missing_gold_ids"]}')
     print(f'  runtime : {result["runtime_sec"]}s')
     print(f'{"="*50}\n')
+
+    if debug_el and kb_embeddings.size:
+        query = "famotidine"
+        query_emb = embedder.encode([normalize(query)], batch_size=batch_size)
+        sims = cosine_scores(query_emb, kb_embeddings)[0]
+        top = np.argsort(sims)[::-1][:5]
+        print("\n[DEBUG] Query sanity check:", query)
+        for idx in top:
+            print(kb_names[idx], kb_ids[idx])
 
     # ── save results ──
     out_dir = RESULTS_DIR / embedder.name
