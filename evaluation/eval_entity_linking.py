@@ -385,6 +385,9 @@ def evaluate(
     string_hits = {1: 0, 5: 0, 10: 0}
     relaxed_hits = {1: 0, 5: 0, 10: 0}
 
+    debug_max = 10
+    debug_count = 0
+
     for i in tqdm(range(0, len(mention_embeddings), chunk_size), desc='ranking'):
         chunk      = mention_embeddings[i : i + chunk_size]
         chunk_gold = gold_ids[i : i + chunk_size]
@@ -410,7 +413,7 @@ def evaluate(
             mention = mention_texts[i + j]
             gold_term = kb.get(gold_id, mention)
 
-            if debug_el:
+            if debug_el and debug_count < debug_max:
                 print("mention:", mention)
                 print("gold:", gold_term)
                 print("gold_id:", gold_id)
@@ -420,6 +423,7 @@ def evaluate(
                 print("top_ids:", top_ids[:5])
                 print("sim_max:", float(sim_row.max()), "sim_min:", float(sim_row.min()))
                 print("-" * 80)
+                debug_count += 1
 
             top1_sims.append(sim_row[sorted_indices[0]])
 
