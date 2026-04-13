@@ -434,16 +434,17 @@ These are the clean comparison results produced by the benchmark.
 | `transformer_scratch` | `bc5cdr_c` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | `word2vec` | `bc5cdr_d` | 0.5344 | 0.7022 | 0.7500 | 0.6048 |
 | `trainword2vec` | `bc5cdr_d` | 0.4604 | 0.6112 | 0.6934 | 0.5284 |
-| `transformer_scratch` | `bc5cdr_d` | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| `transformer_scratch` | `bc5cdr_d` | 0.5419 | 0.6634 | 0.7051 | 0.5917 |
 | `word2vec` | `ncbi` | 0.3518 | 0.4899 | 0.5314 | 0.4084 |
 | `trainword2vec` | `ncbi` | 0.2889 | 0.4648 | 0.5276 | 0.3709 |
-| `transformer_scratch` | `ncbi` | 0.0000 | 0.0000 | 0.0013 | 0.0002 |
+| `transformer_scratch` | `ncbi` | 0.3266 | 0.4824 | 0.5113 | 0.3957 |
 
 ### Interpretation
 
-- The original `word2vec` baseline is the strongest scratch model for disease entity linking.
+- `transformer_scratch` is now the best model on `BC5CDR-d` by `Acc@1`.
+- The original `word2vec` baseline is still the strongest scratch model on `NCBI`.
 - `trainword2vec` is weaker than the earlier `word2vec` run.
-- `transformer_scratch` performed very poorly on the final entity-linking comparison.
+- The lower-learning-rate transformer run recovered the earlier entity-linking collapse and became competitive with Word2Vec.
 - All models failed on `BC5CDR-c`, which means chemical linking remains an open problem in the current setup.
 
 ---
@@ -452,15 +453,15 @@ These are the clean comparison results produced by the benchmark.
 
 | Model | Dataset | Pearson r | Spearman r |
 | --- | --- | --- | --- |
-| `transformer_scratch` | `biosses` | -0.0326 | -0.0791 |
+| `transformer_scratch` | `biosses` | 0.2478 | 0.3415 |
 | `word2vec` | `biosses` | -0.2804 | -0.1220 |
 | `trainword2vec` | `biosses` | -0.4905 | -0.3476 |
 
 ### Interpretation
 
-- `transformer_scratch` is the best of the three on sentence similarity.
+- `transformer_scratch` is clearly the best of the three on sentence similarity.
 - Both Word2Vec models are weaker, especially `trainword2vec`.
-- Even the best scratch model is still weak in absolute terms, so this remains a challenging task.
+- The lower-learning-rate transformer run improved STS substantially compared with earlier transformer checkpoints.
 
 ---
 
@@ -468,14 +469,14 @@ These are the clean comparison results produced by the benchmark.
 
 | Model | Dataset | Accuracy | Macro F1 | Majority baseline |
 | --- | --- | --- | --- | --- |
-| `transformer_scratch` | `nli4ct` | 0.4412 | 0.4412 | 0.5000 |
 | `word2vec` | `nli4ct` | 0.3735 | 0.3735 | 0.5000 |
 | `trainword2vec` | `nli4ct` | 0.3265 | 0.3265 | 0.5000 |
+| `transformer_scratch` | `nli4ct` | 0.3059 | 0.3059 | 0.5000 |
 
 ### Interpretation
 
-- `transformer_scratch` is clearly the strongest scratch model on NLI.
-- Both Word2Vec variants are worse.
+- `word2vec` is the strongest scratch model on NLI in the current final comparison.
+- `trainword2vec` is second and `transformer_scratch` is third.
 - None of the scratch models beat the majority baseline yet, which shows that the task is still difficult for the current training scale.
 
 ---
@@ -485,13 +486,13 @@ These are the clean comparison results produced by the benchmark.
 The current project shows a meaningful pattern:
 
 1. **Static embeddings and contextual embeddings behave differently**
-   The original `word2vec` is better for disease retrieval, while `transformer_scratch` is better for semantic tasks.
+   The original `word2vec` is still strongest on `NCBI` retrieval and NLI, while `transformer_scratch` is strongest on STS and `BC5CDR-d`.
 
 2. **The training pipeline matters**
    The second Word2Vec pipeline (`trainword2vec`) did not beat the original Word2Vec baseline, which suggests that preprocessing, tokenization, corpus handling, or training choices strongly affect performance.
 
-3. **Longer or different transformer training changes task behavior**
-   The scratch transformer improved the sentence-level tasks more than the retrieval tasks.
+3. **Transformer training is highly sensitive to optimization settings**
+   A lower learning rate substantially improved the transformer on STS and restored useful entity-linking performance after an earlier collapse.
 
 4. **Chemical entity linking is still unsolved**
    All current scratch models failed on `BC5CDR-c`.
@@ -506,8 +507,8 @@ If someone asks what this system does in one sentence:
 
 If someone asks which model currently looks best:
 
-- for **entity linking**: `word2vec`
-- for **STS and NLI**: `transformer_scratch`
+- for **NCBI entity linking and NLI**: `word2vec`
+- for **BC5CDR-d and STS**: `transformer_scratch`
 
 If someone asks what is unfinished:
 
