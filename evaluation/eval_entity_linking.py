@@ -327,6 +327,17 @@ def evaluate(
             else:
                 sorted_indices = retrieval_indices[:top_k]
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
+            mention = mention_texts[i + j]
+            top_5_candidates = [kb_names[idx] for idx in sorted_indices[:5]]
+
+            assert gold_id in kb_ids, f"gold_id {gold_id} not found in KB"
+
+            print("mention:", mention)
+            print("top_5_candidates:", top_5_candidates)
+            print("gold_id:", gold_id)
+            print("top_ids:", top_ids[:5])
+            print("sim_max:", float(sim_row.max()), "sim_min:", float(sim_row.min()))
+            print("-" * 80)
             top1_sims.append(sim_row[sorted_indices[0]])
 
             # rank of correct answer (1-indexed, 0 = not in top_k)
