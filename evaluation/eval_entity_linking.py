@@ -17,6 +17,7 @@ import os
 import json
 import argparse
 import time
+import re
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,11 @@ import matplotlib.pyplot as plt
 
 from assets import ensure_entity_linking_assets
 from reranker import RerankerConfig, rerank_candidates, train_reranker
+
+try:
+    from rapidfuzz.fuzz import ratio as fuzzy_ratio
+except ImportError:
+    fuzzy_ratio = None
 
 # ─── paths ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +48,53 @@ CHEMICAL_KB   = DATA_DIR / 'lookups' / 'mesh' / 'CTD_chemicals.tsv'
 
 def _normalize_mesh_id(mesh_id: str) -> str:
     return mesh_id.split(':')[-1].strip()
+
+
+def detect_id_type(id_: str) -> str:
+    if not isinstance(id_, str) or not id_:
+        return "UNKNOWN"
+    if id_.startswith("C"):
+        return "UMLS"
+    if id_.startswith("D"):
+        return "MeSH"
+    return "UNKNOWN"
+
+
+def normalize(text: str) -> str:
+    text = (text or "").lower()
+    text = text.replace("-", " ")
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    return " ".join(text.split()).strip()
+
+
+def fuzzy_match(a: str, b: str) -> bool:
+    if fuzzy_ratio is None:
+        return False
+    return bool(fuzzy_ratio(normalize(a), normalize(b)) > 90)
+
+
+def is_correct(pred_terms: list[str], gold_term: str) -> bool:
+    gold_norm = normalize(gold_term)
+    if not gold_norm:
+        return False
+
+    for term in pred_terms:
+        term_norm = normalize(term)
+        if term_norm == gold_norm or fuzzy_match(term, gold_term):
+            return True
+    return False
+
+
+def is_relaxed_match(pred_terms: list[str], gold_term: str) -> bool:
+    gold_norm = normalize(gold_term)
+    if not gold_norm:
+        return False
+
+    for term in pred_terms:
+        term_norm = normalize(term)
+        if gold_norm in term_norm or term_norm in gold_norm or fuzzy_match(term, gold_term):
+            return True
+    return False
 
 
 # ─── KB loader ────────────────────────────────────────────────────────────────
@@ -182,6 +235,11 @@ def compute_metrics(ranks: list[int], k_values: list[int] = [1, 5, 10]) -> dict:
     compute Acc@k and MRR.
     """
     metrics = {}
+    if not ranks:
+        for k in k_values:
+            metrics[f'acc@{k}'] = 0.0
+        metrics['mrr'] = 0.0
+        return metrics
     for k in k_values:
         metrics[f'acc@{k}'] = float(np.mean([1 if 0 < r <= k else 0 for r in ranks]))
     # MRR
@@ -212,6 +270,7 @@ def evaluate(
     retrieval_top_k: int = 50,
     reranker_epochs: int = 8,
     reranker_hard_negatives: int = 8,
+    debug_el: bool = False,
 ):
     """
     Run entity linking evaluation for one model + dataset combo.
@@ -267,6 +326,10 @@ def evaluate(
     mention_texts = [m['text'] for m in mentions]
     gold_ids      = [m['mesh_id'] for m in mentions]
 
+    if gold_ids and kb_ids:
+        print("Gold type:", detect_id_type(gold_ids[0]))
+        print("KB type:", detect_id_type(kb_ids[0]))
+
     print(f'\nembedding {len(mention_texts)} mentions...')
     t0 = time.time()
     mention_embeddings = embedder.encode(mention_texts, batch_size=batch_size)  # (N, dim)
@@ -306,6 +369,10 @@ def evaluate(
     chunk_size = 256
     ranks      = []
     top1_sims  = []
+    missing_gold = 0
+    total = 0
+    string_hits = {1: 0, 5: 0, 10: 0}
+    relaxed_hits = {1: 0, 5: 0, 10: 0}
 
     for i in tqdm(range(0, len(mention_embeddings), chunk_size), desc='ranking'):
         chunk      = mention_embeddings[i : i + chunk_size]
@@ -315,6 +382,7 @@ def evaluate(
         sims = cosine_scores(chunk, kb_embeddings)
 
         for j, (sim_row, gold_id) in enumerate(zip(sims, chunk_gold)):
+            total += 1
             retrieval_indices = np.argsort(sim_row)[::-1][:max(top_k, retrieval_top_k)]
             if reranker is not None:
                 reranked = rerank_candidates(
@@ -327,18 +395,33 @@ def evaluate(
             else:
                 sorted_indices = retrieval_indices[:top_k]
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
+            top_terms      = [kb_names[idx] for idx in sorted_indices]
             mention = mention_texts[i + j]
-            top_5_candidates = [kb_names[idx] for idx in sorted_indices[:5]]
+            gold_term = kb.get(gold_id, mention)
 
-            assert gold_id in kb_ids, f"gold_id {gold_id} not found in KB"
+            if debug_el:
+                print("mention:", mention)
+                print("gold:", gold_term)
+                print("gold_id:", gold_id)
+                print("Gold type:", detect_id_type(gold_id))
+                print("KB type:", detect_id_type(kb_ids[0]) if kb_ids else "UNKNOWN")
+                print("top_k:", top_terms[:5])
+                print("top_ids:", top_ids[:5])
+                print("sim_max:", float(sim_row.max()), "sim_min:", float(sim_row.min()))
+                print("-" * 80)
 
-            print("mention:", mention)
-            print("top_5_candidates:", top_5_candidates)
-            print("gold_id:", gold_id)
-            print("top_ids:", top_ids[:5])
-            print("sim_max:", float(sim_row.max()), "sim_min:", float(sim_row.min()))
-            print("-" * 80)
             top1_sims.append(sim_row[sorted_indices[0]])
+
+            for k in string_hits:
+                if is_correct(top_terms[:k], gold_term):
+                    string_hits[k] += 1
+            for k in relaxed_hits:
+                if is_relaxed_match(top_terms[:k], gold_term):
+                    relaxed_hits[k] += 1
+
+            if gold_id not in kb_ids:
+                missing_gold += 1
+                continue
 
             # rank of correct answer (1-indexed, 0 = not in top_k)
             if gold_id in top_ids:
@@ -349,9 +432,20 @@ def evaluate(
 
     rank_time = time.time() - t0
     print(f'ranking done in {rank_time:.1f}s')
+    print(f'Missing IDs: {missing_gold}/{total} ({(missing_gold / total if total else 0.0):.2%})')
 
     # ── compute metrics ──
     metrics = compute_metrics(ranks, k_values=[1, 5, 10])
+    string_metrics = {
+        'string_acc@1': float(string_hits[1] / total) if total else 0.0,
+        'string_acc@5': float(string_hits[5] / total) if total else 0.0,
+        'string_acc@10': float(string_hits[10] / total) if total else 0.0,
+    }
+    relaxed_metrics = {
+        'relaxed_acc@1': float(relaxed_hits[1] / total) if total else 0.0,
+        'relaxed_acc@5': float(relaxed_hits[5] / total) if total else 0.0,
+        'relaxed_acc@10': float(relaxed_hits[10] / total) if total else 0.0,
+    }
     total_time = kb_embed_time + mention_embed_time + rank_time
 
     result = {
@@ -359,7 +453,11 @@ def evaluate(
         'dataset'        : dataset_tag,
         'split'          : split,
         **metrics,
+        **string_metrics,
+        **relaxed_metrics,
         'total_mentions' : len(mentions),
+        'evaluated_mentions': len(ranks),
+        'missing_gold_ids': missing_gold,
         'found_in_top_k' : int(sum(1 for r in ranks if r > 0)),
         'not_found'      : int(sum(1 for r in ranks if r == 0)),
         'use_reranker'   : use_reranker,
@@ -375,7 +473,14 @@ def evaluate(
     print(f'  Acc@1   : {result["acc@1"]:.4f}')
     print(f'  Acc@5   : {result["acc@5"]:.4f}')
     print(f'  Acc@10  : {result["acc@10"]:.4f}')
+    print(f'  String Acc@1  : {result["string_acc@1"]:.4f}')
+    print(f'  String Acc@5  : {result["string_acc@5"]:.4f}')
+    print(f'  String Acc@10 : {result["string_acc@10"]:.4f}')
+    print(f'  Relaxed Acc@1 : {result["relaxed_acc@1"]:.4f}')
+    print(f'  Relaxed Acc@5 : {result["relaxed_acc@5"]:.4f}')
+    print(f'  Relaxed Acc@10: {result["relaxed_acc@10"]:.4f}')
     print(f'  MRR     : {result["mrr"]:.4f}')
+    print(f'  missing gold IDs : {result["missing_gold_ids"]}')
     print(f'  runtime : {result["runtime_sec"]}s')
     print(f'{"="*50}\n')
 
@@ -438,6 +543,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable_hard_negatives', action='store_true')
     parser.add_argument('--retrieval_top_k', type=int, default=50)
     parser.add_argument('--reranker_epochs', type=int, default=8)
+    parser.add_argument('--debug_el', action='store_true')
     args = parser.parse_args()
 
     # ── load the right embedder based on --model flag ──
@@ -468,4 +574,5 @@ if __name__ == '__main__':
             use_hard_negatives = not args.disable_hard_negatives,
             retrieval_top_k = args.retrieval_top_k,
             reranker_epochs = args.reranker_epochs,
+            debug_el = args.debug_el,
         )

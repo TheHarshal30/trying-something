@@ -206,6 +206,7 @@ def main():
     parser.add_argument('--use_reranker', action='store_true')
     parser.add_argument('--use_hard_negatives', action='store_true')
     parser.add_argument('--use_tfidf', action='store_true')
+    parser.add_argument('--debug_el', action='store_true')
     parser.add_argument('--download_only', action='store_true',
                         help='download datasets / KBs / model, then exit')
     args = parser.parse_args()
@@ -242,6 +243,7 @@ def main():
             batch_size=args.batch_size,
             use_reranker=args.use_reranker,
             use_hard_negatives=args.use_hard_negatives,
+            debug_el=args.debug_el,
         )
 
         print('\n--- entity linking: BC5CDR-d ---')
@@ -250,6 +252,7 @@ def main():
             batch_size=args.batch_size,
             use_reranker=args.use_reranker,
             use_hard_negatives=args.use_hard_negatives,
+            debug_el=args.debug_el,
         )
 
         print('\n--- entity linking: BC5CDR-c ---')
@@ -258,6 +261,7 @@ def main():
             batch_size=args.batch_size,
             use_reranker=args.use_reranker,
             use_hard_negatives=args.use_hard_negatives,
+            debug_el=args.debug_el,
         )
 
     # ── sts ──
