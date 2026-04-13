@@ -547,19 +547,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # ── load the right embedder based on --model flag ──
-    if args.model == 'pubmedbert':
-        from pubmedbert_embedder import PubMedBERTEmbedder
-        embedder = PubMedBERTEmbedder()
-        embedder.load(str(ROOT / 'models' / 'pubmedbert-local'))
-
-    # team models will be added here as they are pushed
-    # elif args.model == 'word2vec':
-    #     from word2vec_embedder import Word2VecEmbedder
-    #     embedder = Word2VecEmbedder()
-    #     embedder.load(str(ROOT / 'models' / 'word2vec' / 'weights'))
-
-    else:
-        raise ValueError(f'unknown model: {args.model}')
+    # Delegate to run_all's loader so CLI stays in sync with supported models.
+    from run_all import load_embedder
+    embedder = load_embedder(args.model)
 
     # ── run evaluation ──
     datasets = ['ncbi', 'bc5cdr_d', 'bc5cdr_c'] if args.dataset == 'all' else [args.dataset]
