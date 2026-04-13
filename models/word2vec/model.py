@@ -2,6 +2,7 @@ import os
 import re
 import sys
 from pathlib import Path
+import __main__
 
 import numpy as np
 from gensim.models import FastText, KeyedVectors
@@ -27,7 +28,18 @@ class Word2VecEmbedder(BaseEmbedder):
         tfidf_file = os.path.join(model_path, 'weights', 'tfidf_idf.json')
         if os.path.exists(fasttext_file):
             print(f'Loading fastText from {fasttext_file}...')
+            # Older gensim checkpoints may reference the training callback class
+            # from the original __main__ module. Register a harmless placeholder
+            # so evaluation can still load those checkpoints.
+            if not hasattr(__main__, 'EpochLogger'):
+                class EpochLogger:  # noqa: N801 - match pickled callback name
+                    def __init__(self, *args, **kwargs):
+                        pass
+
+                __main__.EpochLogger = EpochLogger
             self.model = FastText.load(fasttext_file)
+            if hasattr(self.model, 'callbacks'):
+                self.model.callbacks = []
             self.wv = self.model.wv
         else:
             print(f'Loading from {weights_file}...')

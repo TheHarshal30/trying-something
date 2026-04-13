@@ -152,6 +152,8 @@ def main() -> None:
 
     model.wv.save_word2vec_format(weights_path, binary=True)
     if args.model_type == "fasttext":
+        if hasattr(model, "callbacks"):
+            model.callbacks = []
         model.save(str(fasttext_path))
         LOGGER.info("fastText model saved: %s", fasttext_path)
 
