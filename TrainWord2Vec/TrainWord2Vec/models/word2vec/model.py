@@ -20,6 +20,7 @@ class Word2VecEmbedder(BaseEmbedder):
         self.wv    = None        # gensim KeyedVectors
         self._name = 'word2vec'
         self.idf   = None
+        self.use_tfidf = True
 
     # ------------------------------------------------------------------
     # load
@@ -54,7 +55,7 @@ class Word2VecEmbedder(BaseEmbedder):
         Returns zero vector for fully OOV input.
         """
         tokens  = text.lower().split()
-        if self.idf:
+        if self.idf and self.use_tfidf:
             weighted_vectors = []
             weights = []
             for token in tokens:

@@ -9,11 +9,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModelForMaskedLM, AutoTokenizer, DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
+
+from preprocess import normalize_text
 
 
 def set_seed(seed: int) -> None:
@@ -25,13 +28,14 @@ def set_seed(seed: int) -> None:
 
 
 class TextDataset(Dataset):
-    def __init__(self, corpus_path: Path, tokenizer, max_length: int):
+    def __init__(self, corpus_path: Path, tokenizer, max_length: int, normalization_strategy: str):
         self.examples = []
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.normalization_strategy = normalization_strategy
         with open(corpus_path, "r", encoding="utf-8") as handle:
             for line in handle:
-                text = line.strip()
+                text = normalize_text(line.strip(), strategy=self.normalization_strategy)
                 if text:
                     self.examples.append(text)
 
@@ -51,6 +55,12 @@ class TextDataset(Dataset):
         )
 
 
+def set_dropout_rate(model: nn.Module, rate: float) -> None:
+    for module in model.modules():
+        if isinstance(module, nn.Dropout):
+            module.p = rate
+
+
 def masked_mean(hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
     return (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
@@ -67,7 +77,7 @@ def pool_outputs(outputs, attention_mask: torch.Tensor, pooling_strategy: str) -
     raise ValueError(f"unknown pooling strategy: {pooling_strategy}")
 
 
-def nt_xent(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.05) -> torch.Tensor:
+def nt_xent(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
     z = torch.cat([z1, z2], dim=0)
     sim = torch.matmul(z, z.T) / temperature
 
@@ -89,12 +99,17 @@ def main() -> None:
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--warmup_ratio", type=float, default=0.1)
-    parser.add_argument("--temperature", type=float, default=0.05)
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--log_every_steps", type=int, default=100)
     parser.add_argument("--save_every_steps", type=int, default=2000)
-    parser.add_argument("--pooling_strategy", default="last4_mean", choices=["cls", "mean", "last4_mean"])
+    parser.add_argument("--pooling_strategy", default="mean", choices=["cls", "mean", "last4_mean"])
+    parser.add_argument("--normalization_strategy", default="chemical",
+                        choices=["chemical", "none", "basic"])
+    parser.add_argument("--use_mlm_aux", action="store_true")
+    parser.add_argument("--mlm_weight", type=float, default=0.1)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -107,19 +122,41 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(str(input_dir))
-    model = AutoModel.from_pretrained(str(input_dir))
+    model = AutoModelForMaskedLM.from_pretrained(str(input_dir))
+    set_dropout_rate(model, args.dropout)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.train()
 
-    dataset = TextDataset(corpus_path=corpus_path, tokenizer=tokenizer, max_length=args.max_length)
+    dataset = TextDataset(
+        corpus_path=corpus_path,
+        tokenizer=tokenizer,
+        max_length=args.max_length,
+        normalization_strategy=args.normalization_strategy,
+    )
+    mlm_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=True,
+        mlm_probability=0.15,
+    )
+
+    def collate_fn(batch: list[str]):
+        encoded = dataset.collate_fn(batch)
+        if not args.use_mlm_aux:
+            return encoded
+        examples = [{key: value[idx] for key, value in encoded.items()} for idx in range(encoded["input_ids"].size(0))]
+        mlm_batch = mlm_collator(examples)
+        for key, value in mlm_batch.items():
+            encoded[f"mlm_{key}"] = value
+        return encoded
+
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=dataset.collate_fn,
+        collate_fn=collate_fn,
     )
 
     steps_per_epoch = math.ceil(len(dataset) / args.batch_size)
@@ -144,12 +181,17 @@ def main() -> None:
     print(f"steps per epoch      : {steps_per_epoch}")
     print(f"total optimizer step : {total_steps}")
     print(f"pooling strategy     : {args.pooling_strategy}")
+    print(f"dropout              : {args.dropout}")
+    print(f"temperature          : {args.temperature}")
+    print(f"normalization        : {args.normalization_strategy}")
+    print(f"use MLM auxiliary    : {args.use_mlm_aux}")
 
     train_start = time.time()
     optimizer_step = 0
     running_loss = 0.0
     running_cos = 0.0
     running_norm = 0.0
+    running_std = 0.0
 
     for epoch in range(args.epochs):
         epoch_start = time.time()
@@ -157,7 +199,18 @@ def main() -> None:
         optimizer.zero_grad(set_to_none=True)
 
         for step, batch in enumerate(progress, start=1):
-            batch = {key: value.to(device) for key, value in batch.items()}
+            mlm_batch = None
+            if args.use_mlm_aux:
+                mlm_batch = {
+                    key.replace("mlm_", ""): value.to(device)
+                    for key, value in batch.items()
+                    if key.startswith("mlm_")
+                }
+            batch = {
+                key: value.to(device)
+                for key, value in batch.items()
+                if not key.startswith("mlm_")
+            }
 
             with torch.autocast(
                 device_type=device.type,
@@ -168,10 +221,20 @@ def main() -> None:
                 out2 = model(**batch, output_hidden_states=True, return_dict=True)
                 z1 = F.normalize(pool_outputs(out1, batch["attention_mask"], args.pooling_strategy), dim=1)
                 z2 = F.normalize(pool_outputs(out2, batch["attention_mask"], args.pooling_strategy), dim=1)
-                loss = nt_xent(z1, z2, temperature=args.temperature) / args.gradient_accumulation_steps
+                contrastive_loss = nt_xent(z1, z2, temperature=args.temperature)
+                loss = contrastive_loss
+                if args.use_mlm_aux and mlm_batch is not None:
+                    mlm_outputs = model(**mlm_batch, output_hidden_states=False, return_dict=True)
+                    loss = loss + args.mlm_weight * mlm_outputs.loss
+                loss = loss / args.gradient_accumulation_steps
 
             if torch.isnan(loss):
                 print("NaN detected, stopping training")
+                break
+
+            batch_std = z1.std(dim=0).mean().item()
+            if batch_std < 0.01:
+                print("Embedding collapse detected. Stopping.")
                 break
 
             if scaler.is_enabled():
@@ -182,6 +245,7 @@ def main() -> None:
             running_loss += loss.item() * args.gradient_accumulation_steps
             running_cos += F.cosine_similarity(z1, z2, dim=1).mean().item()
             running_norm += z1.norm(dim=1).mean().item()
+            running_std += batch_std
 
             if step % args.gradient_accumulation_steps == 0:
                 if scaler.is_enabled():
@@ -201,21 +265,25 @@ def main() -> None:
                     avg_loss = running_loss / args.log_every_steps
                     avg_cos = running_cos / args.log_every_steps
                     avg_norm = running_norm / args.log_every_steps
+                    avg_std = running_std / args.log_every_steps
                     progress.set_postfix(
                         loss=f"{avg_loss:.4f}",
                         cos=f"{avg_cos:.4f}",
                         norm=f"{avg_norm:.4f}",
+                        std=f"{avg_std:.4f}",
                     )
-                    print(
-                        f"step {optimizer_step}/{total_steps} | "
-                        f"loss {avg_loss:.4f} | "
-                        f"cos {avg_cos:.4f} | "
-                        f"norm {avg_norm:.4f} | "
-                        f"lr {scheduler.get_last_lr()[0]:.2e}"
-                    )
+                    print({
+                        "step": f"{optimizer_step}/{total_steps}",
+                        "loss": round(avg_loss, 4),
+                        "cos": round(avg_cos, 4),
+                        "norm": round(avg_norm, 4),
+                        "std": round(avg_std, 4),
+                        "lr": f"{scheduler.get_last_lr()[0]:.2e}",
+                    })
                     running_loss = 0.0
                     running_cos = 0.0
                     running_norm = 0.0
+                    running_std = 0.0
 
                 if optimizer_step % args.save_every_steps == 0:
                     ckpt_dir = output_dir.parent / f"simcse_checkpoint_step_{optimizer_step}"
@@ -223,7 +291,14 @@ def main() -> None:
                     model.save_pretrained(str(ckpt_dir))
                     tokenizer.save_pretrained(str(ckpt_dir))
                     with open(ckpt_dir / "embedding_config.json", "w", encoding="utf-8") as handle:
-                        json.dump({"pooling_strategy": args.pooling_strategy}, handle, indent=2)
+                        json.dump(
+                            {
+                                "pooling_strategy": args.pooling_strategy,
+                                "normalization_strategy": args.normalization_strategy,
+                            },
+                            handle,
+                            indent=2,
+                        )
 
                 if optimizer_step >= total_steps:
                     break
@@ -235,7 +310,14 @@ def main() -> None:
     tokenizer.save_pretrained(str(output_dir))
 
     with open(output_dir / "embedding_config.json", "w", encoding="utf-8") as handle:
-        json.dump({"pooling_strategy": args.pooling_strategy}, handle, indent=2)
+        json.dump(
+            {
+                "pooling_strategy": args.pooling_strategy,
+                "normalization_strategy": args.normalization_strategy,
+            },
+            handle,
+            indent=2,
+        )
 
     with open(output_dir / "training_metadata.json", "w", encoding="utf-8") as handle:
         json.dump(
@@ -247,7 +329,11 @@ def main() -> None:
                 "epochs": args.epochs,
                 "learning_rate": args.learning_rate,
                 "temperature": args.temperature,
+                "dropout": args.dropout,
                 "pooling_strategy": args.pooling_strategy,
+                "normalization_strategy": args.normalization_strategy,
+                "use_mlm_aux": args.use_mlm_aux,
+                "mlm_weight": args.mlm_weight,
                 "total_optimizer_steps": optimizer_step,
                 "runtime_sec": round(total_elapsed, 2),
                 "seed": args.seed,

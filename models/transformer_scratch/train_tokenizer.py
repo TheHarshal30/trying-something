@@ -11,6 +11,7 @@ from pathlib import Path
 from tokenizers import BertWordPieceTokenizer
 from transformers import PreTrainedTokenizerFast
 
+from preprocess import normalize_text
 
 SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
 
@@ -27,9 +28,11 @@ def main() -> None:
         default="models/transformer_scratch/weights/tokenizer",
         help="directory for tokenizer files",
     )
-    parser.add_argument("--vocab_size", type=int, default=30000)
+    parser.add_argument("--vocab_size", type=int, default=50000)
     parser.add_argument("--min_frequency", type=int, default=2)
     parser.add_argument("--limit_alphabet", type=int, default=1000)
+    parser.add_argument("--normalization_strategy", default="chemical",
+                        choices=["chemical", "none", "basic"])
     args = parser.parse_args()
 
     corpus_path = Path(args.corpus_path)
@@ -39,9 +42,18 @@ def main() -> None:
     if not corpus_path.exists():
         raise FileNotFoundError(f"corpus_path not found: {corpus_path}")
 
+    normalized_corpus_path = output_dir / "_normalized_corpus.txt"
+    with open(corpus_path, "r", encoding="utf-8") as src, open(
+        normalized_corpus_path, "w", encoding="utf-8"
+    ) as dst:
+        for line in src:
+            normalized = normalize_text(line.strip(), strategy=args.normalization_strategy)
+            if normalized:
+                dst.write(normalized + "\n")
+
     tokenizer = BertWordPieceTokenizer(lowercase=True)
     tokenizer.train(
-        files=[str(corpus_path)],
+        files=[str(normalized_corpus_path)],
         vocab_size=args.vocab_size,
         min_frequency=args.min_frequency,
         limit_alphabet=args.limit_alphabet,
@@ -65,6 +77,7 @@ def main() -> None:
         "do_lower_case": True,
         "model_max_length": 128,
         "tokenizer_class": "PreTrainedTokenizerFast",
+        "normalization_strategy": args.normalization_strategy,
     }
     with open(output_dir / "tokenizer_config.json", "w", encoding="utf-8") as handle:
         json.dump(tokenizer_config, handle, indent=2)

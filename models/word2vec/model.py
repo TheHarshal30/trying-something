@@ -18,6 +18,7 @@ class Word2VecEmbedder(BaseEmbedder):
         self.wv    = None
         self._name = 'word2vec'
         self.idf   = None
+        self.use_tfidf = True
 
     def load(self, model_path: str) -> None:
         weights_file = os.path.join(model_path, 'weights', 'word2vec.bin')
@@ -31,7 +32,7 @@ class Word2VecEmbedder(BaseEmbedder):
 
     def _embed_one(self, text: str) -> np.ndarray:
         tokens = re.findall(r"[a-z0-9]+(?:[-_/][a-z0-9]+)*", text.lower())
-        if self.idf:
+        if self.idf and self.use_tfidf:
             weighted_vectors = []
             weights = []
             for token in tokens:

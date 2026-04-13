@@ -22,12 +22,20 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+from preprocess import normalize_text
 
 class LineByLineIterableDataset(IterableDataset):
-    def __init__(self, corpus_path: Path, tokenizer: PreTrainedTokenizerFast, max_length: int):
+    def __init__(
+        self,
+        corpus_path: Path,
+        tokenizer: PreTrainedTokenizerFast,
+        max_length: int,
+        normalization_strategy: str,
+    ):
         self.corpus_path = corpus_path
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.normalization_strategy = normalization_strategy
 
     def __iter__(self):
         worker = get_worker_info()
@@ -38,7 +46,7 @@ class LineByLineIterableDataset(IterableDataset):
             for line_idx, line in enumerate(handle):
                 if line_idx % num_workers != worker_id:
                     continue
-                text = line.strip()
+                text = normalize_text(line.strip(), strategy=self.normalization_strategy)
                 if not text:
                     continue
                 yield self.tokenizer(
@@ -95,6 +103,8 @@ def main() -> None:
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--pooling_strategy", default="last4_mean",
                         choices=["cls", "mean", "last4_mean"])
+    parser.add_argument("--normalization_strategy", default="chemical",
+                        choices=["chemical", "none", "basic"])
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -157,6 +167,7 @@ def main() -> None:
         corpus_path=corpus_path,
         tokenizer=tokenizer,
         max_length=args.max_position_embeddings,
+        normalization_strategy=args.normalization_strategy,
     )
     collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
@@ -270,7 +281,14 @@ def main() -> None:
     model.save_pretrained(str(output_dir))
     tokenizer.save_pretrained(str(output_dir))
     with open(output_dir / "embedding_config.json", "w", encoding="utf-8") as handle:
-        json.dump({"pooling_strategy": args.pooling_strategy}, handle, indent=2)
+        json.dump(
+            {
+                "pooling_strategy": args.pooling_strategy,
+                "normalization_strategy": args.normalization_strategy,
+            },
+            handle,
+            indent=2,
+        )
 
     metadata = {
         "corpus_path": str(corpus_path),
@@ -289,6 +307,7 @@ def main() -> None:
         "mlm_probability": args.mlm_probability,
         "seed": args.seed,
         "pooling_strategy": args.pooling_strategy,
+        "normalization_strategy": args.normalization_strategy,
         "total_sequences": total_sequences,
         "total_optimizer_steps": optimizer_step,
         "runtime_sec": round(total_elapsed, 2),

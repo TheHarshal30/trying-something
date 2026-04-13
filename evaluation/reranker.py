@@ -31,6 +31,7 @@ class RerankerConfig:
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     hard_negatives: int = 8
+    use_hard_negatives: bool = True
     max_train_mentions: int | None = 2000
     seed: int = 42
 
@@ -41,6 +42,7 @@ def _build_examples(
     kb_embeddings: np.ndarray,
     kb_ids: list[str],
     hard_negatives: int,
+    use_hard_negatives: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     sim = mention_embeddings @ kb_embeddings.T
     kb_index = {mesh_id: idx for idx, mesh_id in enumerate(kb_ids)}
@@ -60,17 +62,24 @@ def _build_examples(
         right.append(kb_embeddings[pos_idx])
         labels.append(1.0)
 
-        ranked = np.argsort(sim[idx])[::-1]
-        negatives_added = 0
-        for cand_idx in ranked:
-            if kb_ids[cand_idx] == gold_id:
-                continue
+        if use_hard_negatives:
+            ranked = np.argsort(sim[idx])[::-1]
+            negative_indices = []
+            for cand_idx in ranked:
+                if kb_ids[cand_idx] == gold_id:
+                    continue
+                negative_indices.append(cand_idx)
+                if len(negative_indices) >= hard_negatives:
+                    break
+        else:
+            candidates = [cand_idx for cand_idx, mesh_id in enumerate(kb_ids) if mesh_id != gold_id]
+            sample_size = min(hard_negatives, len(candidates))
+            negative_indices = random.sample(candidates, sample_size) if sample_size else []
+
+        for cand_idx in negative_indices:
             left.append(mention)
             right.append(kb_embeddings[cand_idx])
             labels.append(0.0)
-            negatives_added += 1
-            if negatives_added >= hard_negatives:
-                break
 
     return (
         np.asarray(left, dtype=np.float32),
@@ -105,6 +114,7 @@ def train_reranker(
         kb_embeddings=kb_embeddings,
         kb_ids=kb_ids,
         hard_negatives=config.hard_negatives,
+        use_hard_negatives=config.use_hard_negatives,
     )
 
     if len(labels) == 0:

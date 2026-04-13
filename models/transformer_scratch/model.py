@@ -9,6 +9,7 @@ from transformers import AutoModel, AutoTokenizer
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../evaluation"))
 
 from base_embedder import BaseEmbedder
+from preprocess import normalize_text
 
 
 class TransformerScratchEmbedder(BaseEmbedder):
@@ -17,7 +18,8 @@ class TransformerScratchEmbedder(BaseEmbedder):
         self.model = None
         self._name = "transformer_scratch"
         self.device = self._get_device()
-        self.pooling_strategy = "last4_mean"
+        self.pooling_strategy = "mean"
+        self.normalization_strategy = "chemical"
 
     def _get_device(self) -> torch.device:
         if torch.cuda.is_available():
@@ -37,11 +39,14 @@ class TransformerScratchEmbedder(BaseEmbedder):
         config_path = os.path.join(weights_dir, "embedding_config.json")
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as handle:
-                self.pooling_strategy = json.load(handle).get("pooling_strategy", "last4_mean")
+                config = json.load(handle)
+                self.pooling_strategy = config.get("pooling_strategy", "mean")
+                self.normalization_strategy = config.get("normalization_strategy", self.normalization_strategy)
         self.model.to(self.device)
         self.model.eval()
         print(f"loaded — hidden size: {self.model.config.hidden_size}")
         print(f"pooling strategy: {self.pooling_strategy}")
+        print(f"normalization strategy: {self.normalization_strategy}")
 
     def _masked_mean(self, hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
@@ -63,7 +68,10 @@ class TransformerScratchEmbedder(BaseEmbedder):
 
         outputs = []
         for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
+            batch = [
+                normalize_text(text, strategy=self.normalization_strategy)
+                for text in texts[start:start + batch_size]
+            ]
             encoded = self.tokenizer(
                 batch,
                 padding=True,

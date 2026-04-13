@@ -193,6 +193,10 @@ def main():
     parser.add_argument('--task',  default='all',
                         help='all | entity_linking | sts | nli  (default: all)')
     parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--use_simcse', action='store_true')
+    parser.add_argument('--use_reranker', action='store_true')
+    parser.add_argument('--use_hard_negatives', action='store_true')
+    parser.add_argument('--use_tfidf', action='store_true')
     parser.add_argument('--download_only', action='store_true',
                         help='download datasets / KBs / model, then exit')
     args = parser.parse_args()
@@ -209,7 +213,13 @@ def main():
         return
 
     # load embedder once — reused across all tasks
-    embedder = load_embedder(args.model)
+    effective_model_name = args.model
+    if args.use_simcse and args.model == 'transformer_scratch':
+        effective_model_name = 'transformer_scratch_simcse'
+
+    embedder = load_embedder(effective_model_name)
+    if hasattr(embedder, 'use_tfidf'):
+        embedder.use_tfidf = args.use_tfidf
 
     results = {}
 
@@ -220,19 +230,25 @@ def main():
         print('\n--- entity linking: NCBI ---')
         results['ncbi'] = eval_el(
             embedder=embedder, dataset='ncbi',
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            use_reranker=args.use_reranker,
+            use_hard_negatives=args.use_hard_negatives,
         )
 
         print('\n--- entity linking: BC5CDR-d ---')
         results['bc5cdr_d'] = eval_el(
             embedder=embedder, dataset='bc5cdr_d',
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            use_reranker=args.use_reranker,
+            use_hard_negatives=args.use_hard_negatives,
         )
 
         print('\n--- entity linking: BC5CDR-c ---')
         results['bc5cdr_c'] = eval_el(
             embedder=embedder, dataset='bc5cdr_c',
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            use_reranker=args.use_reranker,
+            use_hard_negatives=args.use_hard_negatives,
         )
 
     # ── sts ──

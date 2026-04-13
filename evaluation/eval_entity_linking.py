@@ -208,6 +208,7 @@ def evaluate(
     top_k      : int = 10,
     save_figures: bool = True,
     use_reranker: bool = True,
+    use_hard_negatives: bool = True,
     retrieval_top_k: int = 50,
     reranker_epochs: int = 8,
     reranker_hard_negatives: int = 8,
@@ -293,6 +294,7 @@ def evaluate(
             config=RerankerConfig(
                 epochs=reranker_epochs,
                 hard_negatives=reranker_hard_negatives,
+                use_hard_negatives=use_hard_negatives,
             ),
         )
 
@@ -350,6 +352,7 @@ def evaluate(
         'found_in_top_k' : int(sum(1 for r in ranks if r > 0)),
         'not_found'      : int(sum(1 for r in ranks if r == 0)),
         'use_reranker'   : use_reranker,
+        'use_hard_negatives': use_hard_negatives,
         'runtime_sec'    : round(total_time, 2),
         'date'           : str(date.today()),
     }
@@ -421,6 +424,7 @@ if __name__ == '__main__':
                         help='train | dev | test (default: test)')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--disable_reranker', action='store_true')
+    parser.add_argument('--disable_hard_negatives', action='store_true')
     parser.add_argument('--retrieval_top_k', type=int, default=50)
     parser.add_argument('--reranker_epochs', type=int, default=8)
     args = parser.parse_args()
@@ -450,6 +454,7 @@ if __name__ == '__main__':
             split      = args.split,
             batch_size = args.batch_size,
             use_reranker = not args.disable_reranker,
+            use_hard_negatives = not args.disable_hard_negatives,
             retrieval_top_k = args.retrieval_top_k,
             reranker_epochs = args.reranker_epochs,
         )
