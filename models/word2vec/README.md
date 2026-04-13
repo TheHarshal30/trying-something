@@ -1,10 +1,11 @@
-# Word2Vec Scratch Baseline
+# Word2Vec / FastText Scratch Baseline
 
 This folder contains the main scratch Word2Vec baseline used in the project.
 
 The baseline now supports:
 
 - standard skip-gram training
+- FastText-style subword training through character n-grams
 - optional TF-IDF-weighted sentence pooling during inference
 
 ## Recommended training dataset
@@ -51,7 +52,7 @@ python models/word2vec/prepare_pubmed.py \
   --output_file training_data/pubmed/processed/pubmed_abstracts.txt
 ```
 
-### 3. Train Word2Vec from scratch
+### 3. Train static embeddings from scratch
 
 Run:
 
@@ -59,10 +60,27 @@ Run:
 python models/word2vec/train.py \
   --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
   --output_dir models/word2vec/weights \
-  --vector_size 300 \
+  --model_type word2vec \
+  --vector_size 400 \
   --window 10 \
   --min_count 5 \
   --epochs 10 \
+  --workers 8
+```
+
+For the stronger subword variant that targets rare biomedical terms and chemical names:
+
+```bash
+python models/word2vec/train.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --output_dir models/fasttext/weights \
+  --model_type fasttext \
+  --vector_size 400 \
+  --window 10 \
+  --negative 10 \
+  --epochs 10 \
+  --min_n 3 \
+  --max_n 6 \
   --workers 8
 ```
 
@@ -70,6 +88,12 @@ The trained outputs are saved to:
 
 ```bash
 models/word2vec/weights/word2vec.bin
+```
+
+FastText training also saves:
+
+```bash
+models/fasttext/weights/fasttext.model
 ```
 
 and, unless disabled:
@@ -80,12 +104,15 @@ models/word2vec/weights/tfidf_idf.json
 
 ## Recommended first baseline settings
 
-- `vector_size=300`
+- `model_type=fasttext`
+- `vector_size=400`
 - `window=10`
 - `min_count=5`
 - `sg=1` for skip-gram
 - `negative=10`
 - `epochs=10`
+- `min_n=3`
+- `max_n=6`
 
 These are reasonable first-pass values for a domain-specific static embedding baseline.
 
@@ -136,6 +163,8 @@ models/word2vec/weights/word2vec.bin
 
 and automatically uses `tfidf_idf.json` if it is present.
 
+If `fasttext.model` is present, the same loader will use it and enable subword lookup for rare or unseen tokens.
+
 So once training finishes, the model can be benchmarked against:
 
 - entity linking
@@ -146,4 +175,10 @@ Example:
 
 ```bash
 python evaluation/run_all.py --model word2vec --task all
+```
+
+For the subword benchmark:
+
+```bash
+python evaluation/run_all.py --model fasttext --use_tfidf --task all
 ```

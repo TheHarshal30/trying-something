@@ -77,6 +77,15 @@ def load_embedder(model_name: str):
         embedder.load(str(ROOT / 'models' / 'word2vec'))
         return embedder
 
+    elif model_name == 'fasttext':
+        import sys
+        sys.path.append(str(ROOT / 'models' / 'word2vec'))
+        from model import Word2VecEmbedder
+        embedder = Word2VecEmbedder()
+        embedder._name = 'fasttext'
+        embedder.load(str(ROOT / 'models' / 'fasttext'))
+        return embedder
+
     elif model_name == 'trainword2vec':
         model_dir = ROOT / 'TrainWord2Vec' / 'TrainWord2Vec' / 'models' / 'word2vec'
         model_file = model_dir / 'model.py'

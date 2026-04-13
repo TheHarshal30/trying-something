@@ -16,7 +16,7 @@ import logging
 import time
 from pathlib import Path
 
-from gensim.models import Word2Vec
+from gensim.models import FastText, Word2Vec
 from gensim.models.callbacks import CallbackAny2Vec
 
 from tfidf import compute_tfidf, save_tfidf
@@ -83,7 +83,8 @@ def main() -> None:
         default="models/word2vec/weights",
         help="directory where weights and metadata are saved",
     )
-    parser.add_argument("--vector_size", type=int, default=300)
+    parser.add_argument("--model_type", choices=["word2vec", "fasttext"], default="fasttext")
+    parser.add_argument("--vector_size", type=int, default=400)
     parser.add_argument("--window", type=int, default=10)
     parser.add_argument("--min_count", type=int, default=5)
     parser.add_argument("--sg", type=int, default=1, help="1=skipgram, 0=cbow")
@@ -92,6 +93,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sample", type=float, default=1e-4)
+    parser.add_argument("--min_n", type=int, default=3, help="minimum character n-gram length for FastText")
+    parser.add_argument("--max_n", type=int, default=6, help="maximum character n-gram length for FastText")
     parser.add_argument("--disable_tfidf", action="store_true")
     args = parser.parse_args()
 
@@ -107,16 +110,22 @@ def main() -> None:
     sentence_count = count_lines(corpus_path)
     LOGGER.info("corpus path    : %s", corpus_path)
     LOGGER.info("sentence count : %d", sentence_count)
+    LOGGER.info("model type     : %s", args.model_type)
     LOGGER.info("vector size    : %d", args.vector_size)
     LOGGER.info("window         : %d", args.window)
     LOGGER.info("min count      : %d", args.min_count)
+    LOGGER.info("negative       : %d", args.negative)
     LOGGER.info("epochs         : %d", args.epochs)
     LOGGER.info("workers        : %d", args.workers)
-    LOGGER.info("starting Word2Vec training from scratch")
+    if args.model_type == "fasttext":
+        LOGGER.info("min n          : %d", args.min_n)
+        LOGGER.info("max n          : %d", args.max_n)
+    LOGGER.info("starting %s training from scratch", args.model_type)
 
     sentences = CorpusIterator(corpus_path)
     total_start = time.time()
-    model = Word2Vec(
+    model_cls = FastText if args.model_type == "fasttext" else Word2Vec
+    model_kwargs = dict(
         sentences=sentences,
         vector_size=args.vector_size,
         window=args.window,
@@ -129,14 +138,22 @@ def main() -> None:
         seed=args.seed,
         callbacks=[EpochLogger(total_epochs=args.epochs)],
     )
+    if args.model_type == "fasttext":
+        model_kwargs["min_n"] = args.min_n
+        model_kwargs["max_n"] = args.max_n
+    model = model_cls(**model_kwargs)
     total_elapsed = time.time() - total_start
 
     output_dir.mkdir(parents=True, exist_ok=True)
     weights_path = output_dir / "word2vec.bin"
+    fasttext_path = output_dir / "fasttext.model"
     metadata_path = output_dir / "training_metadata.json"
     tfidf_path = output_dir / "tfidf_idf.json"
 
     model.wv.save_word2vec_format(weights_path, binary=True)
+    if args.model_type == "fasttext":
+        model.save(str(fasttext_path))
+        LOGGER.info("fastText model saved: %s", fasttext_path)
 
     tfidf_terms = 0
     if not args.disable_tfidf:
@@ -150,11 +167,14 @@ def main() -> None:
     metadata = {
         "corpus_path": str(corpus_path),
         "sentence_count": sentence_count,
+        "model_type": args.model_type,
         "vector_size": args.vector_size,
         "window": args.window,
         "min_count": args.min_count,
         "sg": args.sg,
         "negative": args.negative,
+        "min_n": args.min_n if args.model_type == "fasttext" else None,
+        "max_n": args.max_n if args.model_type == "fasttext" else None,
         "sample": args.sample,
         "epochs": args.epochs,
         "workers": args.workers,
