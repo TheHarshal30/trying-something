@@ -55,6 +55,7 @@ Every model follows the same interface:
 Because of that, the benchmark can evaluate:
 
 - `word2vec`
+- `fasttext`
 - `trainword2vec`
 - `transformer_scratch`
 - `transformer_scratch_simcse`
@@ -64,7 +65,7 @@ without rewriting the task logic each time.
 
 ---
 
-## 2. Scratch Word2Vec Pipeline
+## 2. Scratch Word2Vec / FastText Pipeline
 
 This is the first scratch baseline and lives under:
 
@@ -81,9 +82,9 @@ Important files:
 1. reads raw PubMed XML or XML.GZ files
 2. extracts article abstracts
 3. cleans and tokenizes the text
-4. trains skip-gram Word2Vec embeddings
+4. trains either classic skip-gram Word2Vec embeddings or FastText-style subword embeddings
 5. computes optional TF-IDF weights for tokens
-6. saves them as `word2vec.bin` plus `tfidf_idf.json`
+6. saves `word2vec.bin`, and for FastText also saves `fasttext.model`
 
 ### Example
 
@@ -93,7 +94,7 @@ Raw biomedical text:
 Patients with type 2 diabetes received insulin therapy.
 ```
 
-After tokenization, Word2Vec learns vectors for words such as:
+After tokenization, the static model learns vectors for words such as:
 
 - `patients`
 - `type`
@@ -122,6 +123,38 @@ sum( idf(token) * vector(token) ) / sum( idf(token) )
 ```
 
 This is still a static embedding model, but it gives more importance to informative biomedical tokens.
+
+### FastText-style subword modeling
+
+The same training script now also supports a stronger static baseline using FastText-style character n-grams.
+
+In simplified form:
+
+```text
+v(word) = sum( v(character n-grams) )
+```
+
+This helps because biomedical and chemical terms often share meaningful substrings.
+
+Example:
+
+```text
+acetylcysteine
+cysteine
+```
+
+These tokens share subword pieces, so the model can generalize better to rare or unseen strings than plain Word2Vec.
+
+### Current recommended static baseline settings
+
+- `model_type=fasttext`
+- `vector_size=400`
+- `window=10`
+- `negative=10`
+- `epochs=10`
+- TF-IDF weighted pooling enabled
+
+The original `word2vec` baseline is still preserved for comparison, while `fasttext` is the new subword-aware static baseline aimed especially at rare biomedical and chemical terms.
 
 ---
 
@@ -179,7 +212,7 @@ Important files:
 - attention heads: `6`
 - intermediate size: `1536`
 - max sequence length: `128`
-- tokenizer vocab size: `30000`
+- tokenizer vocab size: `50000`
 
 ### Example of masked language modeling
 
@@ -223,6 +256,14 @@ The objective then:
 
 This improves the geometry of the embedding space and makes the transformer act more like a real sentence encoder.
 
+The SimCSE stage now also includes:
+
+- stronger dropout noise
+- embedding standard-deviation tracking
+- collapse detection
+- gradient clipping
+- optional MLM auxiliary loss
+
 ### Pooling strategies
 
 The transformer embedder now supports:
@@ -231,7 +272,9 @@ The transformer embedder now supports:
 - `mean`
 - `last4_mean`
 
-The default is `last4_mean`, which usually gives more stable sentence embeddings than plain CLS pooling.
+The pipeline also stores embedding-time settings such as pooling and normalization in the checkpoint metadata.
+
+Chemical-aware normalization was added as well so chemical strings are handled more consistently during tokenizer training, MLM training, SimCSE fine-tuning, and inference.
 
 ---
 
@@ -346,6 +389,13 @@ Then it computes cosine similarity and ranks the candidates.
 
 If the correct concept is the nearest one, that counts toward `Acc@1`.
 
+The entity-linking pipeline now supports a second-stage reranker as well:
+
+1. retrieve top candidates with cosine similarity
+2. rerank them with a small MLP over the mention vector, candidate vector, and `|u - v|`
+
+It also supports hard-negative sampling during reranker training.
+
 ### Datasets used
 
 - `NCBI`
@@ -459,14 +509,19 @@ At the moment, the most relevant scratch-trained models are:
 1. `word2vec`
    The original scratch Word2Vec baseline in [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec)
 
-2. `trainword2vec`
+2. `fasttext`
+   The subword-aware static baseline trained through the same [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec) pipeline but evaluated as a separate model
+
+3. `trainword2vec`
    The Word2Vec baseline trained from the separate [`TrainWord2Vec/TrainWord2Vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec) pipeline
 
-3. `transformer_scratch`
+4. `transformer_scratch`
    The scratch transformer encoder from [`models/transformer_scratch/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch)
 
-4. `transformer_scratch_simcse`
+5. `transformer_scratch_simcse`
    The SimCSE-fine-tuned version of the scratch transformer encoder
+
+The `fasttext` model is implemented and benchmark-ready, but its results should be added after the next evaluation run on the server.
 
 ---
 
@@ -546,10 +601,10 @@ The current project shows a meaningful pattern:
    A lower learning rate substantially improved the transformer on STS and restored useful entity-linking performance after an earlier collapse.
 
 4. **The system has now moved beyond naive baselines**
-   The codebase now includes contrastive sentence-encoder training, TF-IDF weighting, reranking, and a neural NLI probe, making it a more serious representation-learning system.
+   The codebase now includes contrastive sentence-encoder training, TF-IDF weighting, reranking, hard negatives, a neural NLI probe, chemical-aware normalization, and a FastText-style subword baseline, making it a more serious representation-learning system.
 
-5. **Chemical entity linking is still unsolved**
-   All current scratch models failed on `BC5CDR-c`.
+5. **Chemical entity linking is still the hardest open problem**
+   Earlier benchmarked scratch models all failed on `BC5CDR-c`, which is exactly why the repo now includes chemical-aware normalization and a FastText-style subword baseline.
 
 ---
 
@@ -564,12 +619,18 @@ If someone asks which model currently looks best:
 - for **NCBI entity linking and NLI**: `word2vec`
 - for **BC5CDR-d and STS**: `transformer_scratch`
 
+If someone asks what we are testing next:
+
+- whether `fasttext` improves rare biomedical and chemical term handling
+- whether stabilized SimCSE improves sentence-level quality further
+- whether reranking and hard negatives improve entity linking beyond plain cosine retrieval
+
 If someone asks what is unfinished:
 
 - UMLS-enhanced Word2Vec alignment is still pending UMLS access
-- chemical entity linking remains poor
+- chemical entity linking remains poor in the older benchmarked runs
 - scratch models are still behind strong pretrained biomedical baselines
-- the new SimCSE and reranking upgrades still need full ablation runs on the server
+- the new FastText, SimCSE, reranking, and ablation upgrades still need full server-side runs
 
 ---
 
@@ -583,13 +644,27 @@ python models/word2vec/train.py \
   --output_dir models/word2vec/weights
 ```
 
+Train the subword-aware FastText baseline:
+
+```bash
+python models/word2vec/train.py \
+  --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
+  --output_dir models/fasttext/weights \
+  --model_type fasttext \
+  --vector_size 400 \
+  --window 10 \
+  --negative 10 \
+  --epochs 10
+```
+
 Train tokenizer for the scratch transformer:
 
 ```bash
 python models/transformer_scratch/train_tokenizer.py \
   --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
   --output_dir models/transformer_scratch/weights/tokenizer \
-  --vocab_size 30000
+  --vocab_size 50000 \
+  --normalization_strategy chemical
 ```
 
 Train the scratch transformer:
@@ -598,7 +673,9 @@ Train the scratch transformer:
 python models/transformer_scratch/train_mlm.py \
   --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
   --tokenizer_dir models/transformer_scratch/weights/tokenizer \
-  --output_dir models/transformer_scratch/weights/final
+  --output_dir models/transformer_scratch/weights/final \
+  --pooling_strategy mean \
+  --normalization_strategy chemical
 ```
 
 Fine-tune the transformer with SimCSE:
@@ -607,7 +684,11 @@ Fine-tune the transformer with SimCSE:
 python models/transformer_scratch/train_simcse.py \
   --corpus_path training_data/pubmed/processed/pubmed_abstracts.txt \
   --input_dir models/transformer_scratch/weights/final \
-  --output_dir models/transformer_scratch/weights/final_simcse
+  --output_dir models/transformer_scratch/weights/final_simcse \
+  --temperature 0.1 \
+  --dropout 0.2 \
+  --use_mlm_aux \
+  --normalization_strategy chemical
 ```
 
 Run full benchmark:
@@ -616,14 +697,20 @@ Run full benchmark:
 python evaluation/run_all.py --model transformer_scratch --task all
 ```
 
+Run FastText benchmark:
+
+```bash
+python evaluation/run_all.py --model fasttext --use_tfidf --task all
+```
+
 Run SimCSE benchmark:
 
 ```bash
-python evaluation/run_all.py --model transformer_scratch_simcse --task all
+python evaluation/run_all.py --model transformer_scratch --use_simcse --use_reranker --use_hard_negatives --task all
 ```
 
 Create a clean comparison table:
 
 ```bash
-python evaluation/compare_results.py --models word2vec trainword2vec transformer_scratch
+python evaluation/compare_results.py --models word2vec fasttext trainword2vec transformer_scratch transformer_scratch_simcse
 ```
