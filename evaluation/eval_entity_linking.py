@@ -67,10 +67,14 @@ def normalize(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
-def fuzzy_match(a: str, b: str) -> bool:
+def strong_match(pred: str, gold: str) -> bool:
+    pred_norm = normalize(pred)
+    gold_norm = normalize(gold)
+    if pred_norm == gold_norm:
+        return True
     if fuzzy_ratio is None:
         return False
-    return bool(fuzzy_ratio(normalize(a), normalize(b)) > 90)
+    return bool(fuzzy_ratio(pred_norm, gold_norm) > 85)
 
 
 def is_correct(pred_terms: list[str], gold_term: str) -> bool:
@@ -79,8 +83,7 @@ def is_correct(pred_terms: list[str], gold_term: str) -> bool:
         return False
 
     for term in pred_terms:
-        term_norm = normalize(term)
-        if term_norm == gold_norm or fuzzy_match(term, gold_term):
+        if strong_match(term, gold_term):
             return True
     return False
 
@@ -92,7 +95,7 @@ def is_relaxed_match(pred_terms: list[str], gold_term: str) -> bool:
 
     for term in pred_terms:
         term_norm = normalize(term)
-        if gold_norm in term_norm or term_norm in gold_norm or fuzzy_match(term, gold_term):
+        if gold_norm in term_norm or term_norm in gold_norm or strong_match(term, gold_term):
             return True
     return False
 
@@ -147,8 +150,19 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
                         kb_ids.append(mid)
                         kb_terms.append(syn)
 
-    print(f'loaded KB: {len(kb_terms)} entries from {kb_path.name}')
-    return {"ids": kb_ids, "terms": kb_terms, "id_to_name": id_to_name}
+    # Deduplicate terms while preserving first seen ID.
+    seen = set()
+    new_terms: list[str] = []
+    new_ids: list[str] = []
+    for term, mid in zip(kb_terms, kb_ids):
+        if term in seen:
+            continue
+        seen.add(term)
+        new_terms.append(term)
+        new_ids.append(mid)
+
+    print(f'loaded KB: {len(new_terms)} entries from {kb_path.name}')
+    return {"ids": new_ids, "terms": new_terms, "id_to_name": id_to_name}
 
 
 # ─── dataset loaders ──────────────────────────────────────────────────────────
