@@ -315,6 +315,17 @@ def evaluate(
     kb_ids    = list(kb.keys())
     kb_names  = list(kb.values())
 
+    print("Sample gold IDs:")
+    for i in range(min(10, len(mentions))):
+        print(mentions[i]["mesh_id"])
+
+    print("\nSample KB IDs:")
+    for i in range(min(10, len(kb_ids))):
+        print(kb_ids[i])
+
+    if mentions and kb_ids:
+        print(type(mentions[0]["mesh_id"]), type(kb_ids[0]))
+
     # ── embed KB ──
     print(f'\nembedding KB ({len(kb_names)} terms)...')
     t0 = time.time()
