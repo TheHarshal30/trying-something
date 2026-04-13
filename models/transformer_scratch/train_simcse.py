@@ -258,3 +258,7 @@ def main() -> None:
 
     print(f"training finished in {total_elapsed:.2f}s")
     print(f"final model saved to {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
