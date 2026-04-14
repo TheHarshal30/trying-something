@@ -67,6 +67,15 @@ def normalize(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def expand_term(term: str) -> set[str]:
+    variants = {term}
+    variants.add(term.replace(" ", ""))
+    variants.add(term.replace(" ", "-"))
+    if " sodium" in term:
+        variants.add(term.replace(" sodium", ""))
+    return {variant.strip() for variant in variants if variant and variant.strip()}
+
+
 def strong_match(pred: str, gold: str) -> bool:
     pred_norm = normalize(pred)
     gold_norm = normalize(gold)
@@ -137,27 +146,28 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
         mid  = row['clean_id']
         name = row[name_col]
         if isinstance(mid, str) and isinstance(name, str):
-            norm_name = normalize(name)
-            if norm_name:
-                kb_ids.append(mid)
-                kb_terms.append(norm_name)
-                id_to_name.setdefault(mid, norm_name)
-
+            terms = [name]
             if isinstance(row.get('Synonyms'), str):
-                for syn in row['Synonyms'].split('|'):
-                    syn = normalize(syn)
-                    if syn:
-                        kb_ids.append(mid)
-                        kb_terms.append(syn)
+                terms.extend(row['Synonyms'].split('|'))
 
-    # Deduplicate terms while preserving first seen ID.
+            for term in terms:
+                norm_term = normalize(term)
+                if not norm_term:
+                    continue
+                id_to_name.setdefault(mid, norm_term)
+                for expanded in expand_term(norm_term):
+                    kb_ids.append(mid)
+                    kb_terms.append(expanded)
+
+    # Deduplicate term/id pairs while preserving first seen order.
     seen = set()
     new_terms: list[str] = []
     new_ids: list[str] = []
     for term, mid in zip(kb_terms, kb_ids):
-        if term in seen:
+        key = (term, mid)
+        if key in seen:
             continue
-        seen.add(term)
+        seen.add(key)
         new_terms.append(term)
         new_ids.append(mid)
 
