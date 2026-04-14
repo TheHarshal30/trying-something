@@ -27,6 +27,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from assets import ensure_entity_linking_assets
+from alias_dict import ALIAS_MAP
 from reranker import RerankerConfig, rerank_candidates, train_reranker
 
 try:
@@ -76,6 +77,19 @@ def expand_term(term: str) -> set[str]:
     return {variant.strip() for variant in variants if variant and variant.strip()}
 
 
+def filter_candidates(mention: str, kb_terms: list[str]) -> list[int]:
+    normalized = normalize(mention)
+    tokens = {tok for tok in normalized.split() if len(tok) >= 3}
+    if not tokens:
+        return []
+
+    matches: list[int] = []
+    for idx, term in enumerate(kb_terms):
+        if term == normalized or any(tok in term for tok in tokens):
+            matches.append(idx)
+    return matches
+
+
 def strong_match(pred: str, gold: str) -> bool:
     pred_norm = normalize(pred)
     gold_norm = normalize(gold)
@@ -107,6 +121,18 @@ def is_relaxed_match(pred_terms: list[str], gold_term: str) -> bool:
         if gold_norm in term_norm or term_norm in gold_norm or strong_match(term, gold_term):
             return True
     return False
+
+
+def exact_boost(query: str, candidate: str) -> float:
+    return 1.0 if normalize(query) == normalize(candidate) else 0.0
+
+
+def hybrid_score(query: str, candidate: str, cos_sim: float) -> float:
+    if fuzzy_ratio is None:
+        str_sim = 0.0
+    else:
+        str_sim = float(fuzzy_ratio(normalize(query), normalize(candidate)) / 100.0)
+    return (0.6 * cos_sim) + (0.3 * str_sim) + (0.1 * exact_boost(query, candidate))
 
 
 # ─── KB loader ────────────────────────────────────────────────────────────────
@@ -158,6 +184,12 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
                 for expanded in expand_term(norm_term):
                     kb_ids.append(mid)
                     kb_terms.append(expanded)
+                if entity_type == 'Chemical' and norm_term in ALIAS_MAP:
+                    for alias in ALIAS_MAP[norm_term]:
+                        alias_norm = normalize(alias)
+                        if alias_norm:
+                            kb_ids.append(mid)
+                            kb_terms.append(alias_norm)
 
     # Deduplicate term/id pairs while preserving first seen order.
     seen = set()
@@ -420,6 +452,7 @@ def evaluate(
     total = 0
     string_hits = {1: 0, 5: 0, 10: 0}
     relaxed_hits = {1: 0, 5: 0, 10: 0}
+    failures: list[dict[str, object]] = []
 
     debug_max = 10
     debug_count = 0
@@ -427,13 +460,21 @@ def evaluate(
     for i in tqdm(range(0, len(mention_embeddings), chunk_size), desc='ranking'):
         chunk      = mention_embeddings[i : i + chunk_size]
         chunk_gold = gold_ids[i : i + chunk_size]
+        chunk_mentions = mention_texts[i : i + chunk_size]
 
         # (chunk_size, KB_size)
         sims = cosine_scores(chunk, kb_embeddings)
 
-        for j, (sim_row, gold_id) in enumerate(zip(sims, chunk_gold)):
+        for j, (sim_row, gold_id, mention) in enumerate(zip(sims, chunk_gold, chunk_mentions)):
             total += 1
-            retrieval_indices = np.argsort(sim_row)[::-1][:max(top_k, retrieval_top_k)]
+            candidate_indices = filter_candidates(mention, kb_names)
+            if candidate_indices:
+                candidate_scores = sim_row[candidate_indices]
+                order = np.argsort(candidate_scores)[::-1][:max(top_k, retrieval_top_k)]
+                retrieval_indices = np.asarray(candidate_indices, dtype=int)[order]
+            else:
+                retrieval_indices = np.argsort(sim_row)[::-1][:max(top_k, retrieval_top_k)]
+
             if reranker is not None:
                 reranked = rerank_candidates(
                     model=reranker,
@@ -443,10 +484,14 @@ def evaluate(
                 )
                 sorted_indices = reranked[:top_k]
             else:
-                sorted_indices = retrieval_indices[:top_k]
+                hybrid_scores = [
+                    hybrid_score(mention, kb_names[idx], float(sim_row[idx]))
+                    for idx in retrieval_indices
+                ]
+                order = np.argsort(hybrid_scores)[::-1]
+                sorted_indices = retrieval_indices[order][:top_k]
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
             top_terms      = [kb_names[idx] for idx in sorted_indices]
-            mention = mention_texts[i + j]
             gold_term = id_to_name.get(gold_id, mention)
 
             if debug_el and debug_count < debug_max:
@@ -479,6 +524,12 @@ def evaluate(
                 rank = top_ids.index(gold_id) + 1
             else:
                 rank = 0
+                failures.append({
+                    "mention": mention,
+                    "gold": gold_term,
+                    "gold_id": gold_id,
+                    "top": top_terms[:5],
+                })
             ranks.append(rank)
 
     rank_time = time.time() - t0
@@ -543,6 +594,13 @@ def evaluate(
         print("\n[DEBUG] Query sanity check:", query)
         for idx in top:
             print(kb_names[idx], kb_ids[idx])
+
+    if failures:
+        failures_path = RESULTS_DIR / embedder.name / "failures.json"
+        failures_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(failures_path, "w", encoding="utf-8") as handle:
+            json.dump(failures[:100], handle, indent=2)
+        print(f"saved failures to {failures_path}")
 
     # ── save results ──
     out_dir = RESULTS_DIR / embedder.name

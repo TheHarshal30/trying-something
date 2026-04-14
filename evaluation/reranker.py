@@ -14,13 +14,20 @@ class Reranker(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(3 * dim, dim),
+            nn.Linear(3 * dim + 1, dim),
             nn.ReLU(),
             nn.Linear(dim, 1),
         )
 
-    def forward(self, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([u, v, torch.abs(u - v)], dim=-1)
+    def forward(
+        self,
+        u: torch.Tensor,
+        v: torch.Tensor,
+        cos_sim: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if cos_sim is None:
+            cos_sim = torch.sum(u * v, dim=-1)
+        x = torch.cat([u, v, torch.abs(u - v), cos_sim.unsqueeze(-1)], dim=-1)
         return self.mlp(x).squeeze(-1)
 
 
@@ -44,7 +51,9 @@ def _build_examples(
     hard_negatives: int,
     use_hard_negatives: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    sim = mention_embeddings @ kb_embeddings.T
+    mention_norm = mention_embeddings / np.clip(np.linalg.norm(mention_embeddings, axis=1, keepdims=True), 1e-8, None)
+    kb_norm = kb_embeddings / np.clip(np.linalg.norm(kb_embeddings, axis=1, keepdims=True), 1e-8, None)
+    sim = mention_norm @ kb_norm.T
     kb_index = {mesh_id: idx for idx, mesh_id in enumerate(kb_ids)}
 
     left = []
@@ -141,8 +150,8 @@ def train_reranker(
             mention_batch = mention_batch.to(device)
             cand_batch = cand_batch.to(device)
             label_batch = label_batch.to(device)
-
-            logits = model(mention_batch, cand_batch)
+            cos_batch = F.cosine_similarity(mention_batch, cand_batch, dim=-1)
+            logits = model(mention_batch, cand_batch, cos_batch)
             loss = F.binary_cross_entropy_with_logits(logits, label_batch)
 
             if torch.isnan(loss):
@@ -179,7 +188,8 @@ def rerank_candidates(
 
     with torch.no_grad():
         mention = mention.expand(candidates.size(0), -1)
-        scores = model(mention, candidates).detach().cpu().numpy()
+        cos_sim = F.cosine_similarity(mention, candidates, dim=-1)
+        scores = model(mention, candidates, cos_sim).detach().cpu().numpy()
 
     order = np.argsort(scores)[::-1]
     return candidate_indices[order]
