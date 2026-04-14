@@ -27,7 +27,6 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from assets import ensure_entity_linking_assets
-from alias_dict import ALIAS_MAP
 from reranker import RerankerConfig, rerank_candidates, train_reranker
 
 try:
@@ -66,15 +65,6 @@ def normalize(text: str) -> str:
     text = text.replace("-", " ")
     text = re.sub(r"[^a-z0-9\s]", "", text)
     return " ".join(text.split()).strip()
-
-
-def expand_term(term: str) -> set[str]:
-    variants = {term}
-    variants.add(term.replace(" ", ""))
-    variants.add(term.replace(" ", "-"))
-    if " sodium" in term:
-        variants.add(term.replace(" sodium", ""))
-    return {variant.strip() for variant in variants if variant and variant.strip()}
 
 
 def filter_candidates(mention: str, kb_terms: list[str]) -> list[int]:
@@ -135,6 +125,20 @@ def hybrid_score(query: str, candidate: str, cos_sim: float) -> float:
     return (0.6 * cos_sim) + (0.3 * str_sim) + (0.1 * exact_boost(query, candidate))
 
 
+def is_valid_name(name) -> bool:
+    if name is None:
+        return False
+
+    name = str(name).strip().lower()
+    if name == "" or name == "nan":
+        return False
+    if name.startswith("dtxsid"):
+        return False
+    if len(name) > 20 and name.isalnum():
+        return False
+    return True
+
+
 # ─── KB loader ────────────────────────────────────────────────────────────────
 
 def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, str]]:
@@ -187,35 +191,32 @@ def _build_kb(
     for _, row in df.iterrows():
         mid  = row['clean_id']
         name = row[name_col]
-        if isinstance(mid, str) and isinstance(name, str):
-            terms = [name]
-            if isinstance(row.get('Synonyms'), str):
-                terms.extend(row['Synonyms'].split('|'))
+        if not isinstance(mid, str):
+            continue
 
-            for term in terms:
-                norm_term = normalize(term)
-                if not norm_term:
-                    continue
-                id_to_name.setdefault(mid, norm_term)
-                for expanded in expand_term(norm_term):
-                    kb_ids.append(mid)
-                    kb_terms.append(expanded)
-                    if len(kb_terms) <= 5:
-                        print("\n[KB BUILD DEBUG]")
-                        print("TERM:", expanded)
-                        print("ID:", mid)
-                        print("SOURCE:", "ChemicalName/Synonym/Expanded")
-                if entity_type == 'Chemical' and norm_term in ALIAS_MAP:
-                    for alias in ALIAS_MAP[norm_term]:
-                        alias_norm = normalize(alias)
-                        if alias_norm:
-                            kb_ids.append(mid)
-                            kb_terms.append(alias_norm)
-                            if len(kb_terms) <= 5:
-                                print("\n[KB BUILD DEBUG]")
-                                print("TERM:", alias_norm)
-                                print("ID:", mid)
-                                print("SOURCE:", "AliasMap")
+        terms: list[str] = []
+        if is_valid_name(name):
+            terms.append(str(name))
+        else:
+            continue
+
+        if isinstance(row.get('Synonyms'), str):
+            for syn in row['Synonyms'].split('|'):
+                if is_valid_name(syn):
+                    terms.append(syn)
+
+        for term in terms:
+            norm_term = normalize(term)
+            if not norm_term:
+                continue
+            id_to_name.setdefault(mid, norm_term)
+            kb_ids.append(mid)
+            kb_terms.append(norm_term)
+            if len(kb_terms) <= 5:
+                print("\n[KB BUILD DEBUG]")
+                print("TERM:", norm_term)
+                print("ID:", mid)
+                print("SOURCE:", "ChemicalName/Synonym")
 
     # Deduplicate term/id pairs while preserving first seen order.
     seen = set()
@@ -513,7 +514,7 @@ def evaluate(
             if any(normalize(gold_term) == t for t in kb_names):
                 exact_string_coverage += 1
 
-            candidate_indices = filter_candidates(mention, kb_names)
+            candidate_indices = list(range(len(kb_names)))
             filter_total += 1
             if candidate_indices:
                 filter_kept += 1
@@ -523,12 +524,9 @@ def evaluate(
                 print("After filter:", len(candidate_indices))
                 print("mention:", mention)
                 print("gold_term:", gold_term)
-            if candidate_indices:
-                candidate_scores = sim_row[candidate_indices]
-                order = np.argsort(candidate_scores)[::-1][:max(top_k, retrieval_top_k)]
-                retrieval_indices = np.asarray(candidate_indices, dtype=int)[order]
-            else:
-                retrieval_indices = np.argsort(sim_row)[::-1][:max(top_k, retrieval_top_k)]
+            candidate_scores = sim_row[candidate_indices]
+            order = np.argsort(candidate_scores)[::-1][:max(top_k, retrieval_top_k)]
+            retrieval_indices = np.asarray(candidate_indices, dtype=int)[order]
 
             if reranker is not None:
                 reranked = rerank_candidates(
