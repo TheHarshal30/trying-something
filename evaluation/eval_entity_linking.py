@@ -160,6 +160,22 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
     df = pd.read_csv(kb_path, sep='\t', comment='#', header=None,
                      names=col_names, on_bad_lines='skip')
 
+    return _build_kb(df, name_col, id_col, entity_type, kb_path)
+
+
+def _build_kb(
+    df: pd.DataFrame,
+    name_col: str,
+    id_col: str,
+    entity_type: str,
+    kb_path: Path,
+) -> dict[str, list[str] | dict[str, str]]:
+    raw_rows = df.head(5).to_dict(orient="records")
+    print("\n[RAW KB SAMPLE]")
+    for row in raw_rows:
+        print(row)
+    print("[KB COLUMNS]", list(df.columns))
+
     df['clean_id'] = df[id_col].apply(
         lambda x: x.split(':')[-1] if isinstance(x, str) else x
     )
@@ -184,12 +200,22 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
                 for expanded in expand_term(norm_term):
                     kb_ids.append(mid)
                     kb_terms.append(expanded)
+                    if len(kb_terms) <= 5:
+                        print("\n[KB BUILD DEBUG]")
+                        print("TERM:", expanded)
+                        print("ID:", mid)
+                        print("SOURCE:", "ChemicalName/Synonym/Expanded")
                 if entity_type == 'Chemical' and norm_term in ALIAS_MAP:
                     for alias in ALIAS_MAP[norm_term]:
                         alias_norm = normalize(alias)
                         if alias_norm:
                             kb_ids.append(mid)
                             kb_terms.append(alias_norm)
+                            if len(kb_terms) <= 5:
+                                print("\n[KB BUILD DEBUG]")
+                                print("TERM:", alias_norm)
+                                print("ID:", mid)
+                                print("SOURCE:", "AliasMap")
 
     # Deduplicate term/id pairs while preserving first seen order.
     seen = set()
@@ -334,6 +360,7 @@ def evaluate(
     reranker_epochs: int = 8,
     reranker_hard_negatives: int = 8,
     debug_el: bool = False,
+    diagnostic: bool = False,
 ):
     """
     Run entity linking evaluation for one model + dataset combo.
@@ -402,12 +429,20 @@ def evaluate(
     print(f'KB embedded in {kb_embed_time:.1f}s — shape: {kb_embeddings.shape}')
 
     # ── embed mentions ──
+    raw_mentions = [m['text'] for m in mentions]
     mention_texts = [normalize(m['text']) for m in mentions]
     gold_ids      = [m['mesh_id'] for m in mentions]
 
     if gold_ids and kb_ids:
         print("Gold type:", detect_id_type(gold_ids[0]))
         print("KB type:", detect_id_type(kb_ids[0]))
+
+    if diagnostic:
+        print("\n[MENTION DEBUG]")
+        for i in range(min(5, len(raw_mentions))):
+            print("RAW:", raw_mentions[i])
+            print("PROCESSED:", mention_texts[i])
+            print("-" * 40)
 
     print(f'\nembedding {len(mention_texts)} mentions...')
     t0 = time.time()
@@ -453,6 +488,12 @@ def evaluate(
     string_hits = {1: 0, 5: 0, 10: 0}
     relaxed_hits = {1: 0, 5: 0, 10: 0}
     failures: list[dict[str, object]] = []
+    gold_in_kb = 0
+    filter_kept = 0
+    filter_total = 0
+    top5_contains_gold = 0
+    exact_string_coverage = 0
+    exact_string_coverage_total = 0
 
     debug_max = 10
     debug_count = 0
@@ -467,7 +508,21 @@ def evaluate(
 
         for j, (sim_row, gold_id, mention) in enumerate(zip(sims, chunk_gold, chunk_mentions)):
             total += 1
+            gold_term = id_to_name.get(gold_id, mention)
+            exact_string_coverage_total += 1
+            if any(normalize(gold_term) == t for t in kb_names):
+                exact_string_coverage += 1
+
             candidate_indices = filter_candidates(mention, kb_names)
+            filter_total += 1
+            if candidate_indices:
+                filter_kept += 1
+            if diagnostic and debug_count < debug_max:
+                print("\n[PRE-FILTER]")
+                print("Before filter:", len(kb_names))
+                print("After filter:", len(candidate_indices))
+                print("mention:", mention)
+                print("gold_term:", gold_term)
             if candidate_indices:
                 candidate_scores = sim_row[candidate_indices]
                 order = np.argsort(candidate_scores)[::-1][:max(top_k, retrieval_top_k)]
@@ -492,7 +547,7 @@ def evaluate(
                 sorted_indices = retrieval_indices[order][:top_k]
             top_ids        = [kb_ids[idx] for idx in sorted_indices]
             top_terms      = [kb_names[idx] for idx in sorted_indices]
-            gold_term = id_to_name.get(gold_id, mention)
+            top5_contains_gold += int(any(strong_match(term, gold_term) for term in top_terms[:5]))
 
             if debug_el and debug_count < debug_max:
                 print("mention:", mention)
@@ -503,6 +558,20 @@ def evaluate(
                 print("top_k:", top_terms[:5])
                 print("top_ids:", top_ids[:5])
                 print("sim_max:", float(sim_row.max()), "sim_min:", float(sim_row.min()))
+                print("[SCORING DEBUG]")
+                for term, idx in zip(top_terms[:5], sorted_indices[:5]):
+                    cos_sim = float(sim_row[idx])
+                    str_sim = float((fuzzy_ratio(normalize(mention), normalize(term)) / 100.0) if fuzzy_ratio is not None else 0.0)
+                    final_score = hybrid_score(mention, term, cos_sim)
+                    print("term:", term)
+                    print("cos:", cos_sim)
+                    print("str:", str_sim)
+                    print("final:", final_score)
+                if reranker is not None:
+                    print("[RERANK INPUT]")
+                    print("u shape:", chunk[j].shape)
+                    print("v shape:", kb_embeddings[sorted_indices[:5]].shape if len(sorted_indices) else (0,))
+                    print("cos:", float(sim_row[sorted_indices[0]]) if len(sorted_indices) else 0.0)
                 print("-" * 80)
                 debug_count += 1
 
@@ -518,6 +587,7 @@ def evaluate(
             if gold_id not in kb_ids:
                 missing_gold += 1
                 continue
+            gold_in_kb += 1
 
             # rank of correct answer (1-indexed, 0 = not in top_k)
             if gold_id in top_ids:
@@ -535,6 +605,10 @@ def evaluate(
     rank_time = time.time() - t0
     print(f'ranking done in {rank_time:.1f}s')
     print(f'Missing IDs: {missing_gold}/{total} ({(missing_gold / total if total else 0.0):.2%})')
+    print(f'Gold in KB: {gold_in_kb}/{total} ({(gold_in_kb / total if total else 0.0):.2%})')
+    print(f'Filter kept at least one candidate: {filter_kept}/{filter_total} ({(filter_kept / filter_total if filter_total else 0.0):.2%})')
+    print(f'Exact string coverage in KB terms: {exact_string_coverage}/{exact_string_coverage_total} ({(exact_string_coverage / exact_string_coverage_total if exact_string_coverage_total else 0.0):.2%})')
+    print(f'Top-5 contains gold by string match: {top5_contains_gold}/{total} ({(top5_contains_gold / total if total else 0.0):.2%})')
 
     # ── compute metrics ──
     metrics = compute_metrics(ranks, k_values=[1, 5, 10])
@@ -662,6 +736,7 @@ if __name__ == '__main__':
     parser.add_argument('--retrieval_top_k', type=int, default=50)
     parser.add_argument('--reranker_epochs', type=int, default=8)
     parser.add_argument('--debug_el', action='store_true')
+    parser.add_argument('--diagnostic', action='store_true')
     args = parser.parse_args()
 
     # ── load the right embedder based on --model flag ──
@@ -683,4 +758,5 @@ if __name__ == '__main__':
             retrieval_top_k = args.retrieval_top_k,
             reranker_epochs = args.reranker_epochs,
             debug_el = args.debug_el,
+            diagnostic = args.diagnostic,
         )
