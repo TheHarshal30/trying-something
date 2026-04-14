@@ -139,6 +139,47 @@ def is_valid_name(name) -> bool:
     return True
 
 
+def is_probable_id(value) -> bool:
+    if value is None:
+        return False
+
+    text = str(value).strip()
+    if not text:
+        return False
+
+    norm = text.lower()
+    if norm.startswith("dtxsid"):
+        return True
+    if re.fullmatch(r"[CD]\d{4,}", text):
+        return True
+    if len(text) > 5 and text.isalnum() and " " not in text:
+        return True
+    return False
+
+
+def extract_kb_name_and_id(row: pd.Series, name_col: str, id_col: str) -> tuple[str | None, str | None]:
+    """
+    Some CTD exports or local preprocessing can effectively swap the expected
+    name/id columns. Infer the human-readable term and the identifier per row
+    instead of trusting column position blindly.
+    """
+    raw_name = row.get(name_col)
+    raw_id = row.get(id_col)
+
+    candidates = [raw_name, raw_id]
+
+    name = next((cand for cand in candidates if is_valid_name(cand)), None)
+    chem_id = next((cand for cand in candidates if is_probable_id(cand)), None)
+
+    if name is None or chem_id is None:
+        return None, None
+
+    if normalize(name) == normalize(chem_id):
+        return None, None
+
+    return str(name), str(chem_id)
+
+
 # ─── KB loader ────────────────────────────────────────────────────────────────
 
 def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, str]]:
@@ -189,17 +230,11 @@ def _build_kb(
     id_to_name: dict[str, str] = {}
 
     for _, row in df.iterrows():
-        mid  = row['clean_id']
-        name = row[name_col]
-        if not isinstance(mid, str):
+        name, mid = extract_kb_name_and_id(row, name_col, id_col)
+        if not name or not mid:
             continue
 
-        terms: list[str] = []
-        if is_valid_name(name):
-            terms.append(str(name))
-        else:
-            continue
-
+        terms: list[str] = [name]
         if isinstance(row.get('Synonyms'), str):
             for syn in row['Synonyms'].split('|'):
                 if is_valid_name(syn):
