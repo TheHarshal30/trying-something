@@ -86,19 +86,6 @@ def load_embedder(model_name: str):
         embedder.load(str(ROOT / 'models' / 'fasttext'))
         return embedder
 
-    elif model_name == 'trainword2vec':
-        model_dir = ROOT / 'TrainWord2Vec' / 'TrainWord2Vec' / 'models' / 'word2vec'
-        model_file = model_dir / 'model.py'
-        spec = importlib.util.spec_from_file_location('trainword2vec_model', model_file)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-
-        embedder = module.Word2VecEmbedder()
-        embedder._name = 'trainword2vec'
-        embedder.load(str(model_dir))
-        return embedder
-
     elif model_name == 'transformer_scratch':
         import sys
         sys.path.append(str(ROOT / 'models' / 'transformer_scratch'))

@@ -56,7 +56,6 @@ Because of that, the benchmark can evaluate:
 
 - `word2vec`
 - `fasttext`
-- `trainword2vec`
 - `transformer_scratch`
 - `transformer_scratch_simcse`
 - pretrained baselines like `pubmedbert` and `sapbert`
@@ -158,28 +157,9 @@ The original `word2vec` baseline is still preserved for comparison, while `fastt
 
 ---
 
-## 3. Alternative Word2Vec Pipeline
+## 3. Legacy Word2Vec Training Pipeline
 
-A second Word2Vec training folder was added under:
-
-- [`TrainWord2Vec/TrainWord2Vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec)
-
-Important files:
-
-- [`01_train_word2vec.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/01_train_word2vec.py)
-- [`02_extract_umls_pairs.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/02_extract_umls_pairs.py)
-- [`03_align_ntxent.py`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec/03_align_ntxent.py)
-
-### What it is intended to do
-
-This pipeline has two stages:
-
-1. train a baseline Word2Vec model on PubMed
-2. optionally improve it using UMLS synonym pairs with contrastive learning
-
-The UMLS-enhanced part is currently **on hold** because it requires `MRCONSO.RRF` from the UMLS release.
-
-So at the moment, only the baseline part of this pipeline has been benchmarked.
+The separate `TrainWord2Vec/TrainWord2Vec/` subtree has been removed from the repository. The main Word2Vec and FastText baseline now live entirely under [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec).
 
 ---
 
@@ -512,13 +492,10 @@ At the moment, the most relevant scratch-trained models are:
 2. `fasttext`
    The subword-aware static baseline trained through the same [`models/word2vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/word2vec) pipeline but evaluated as a separate model
 
-3. `trainword2vec`
-   The Word2Vec baseline trained from the separate [`TrainWord2Vec/TrainWord2Vec/`](/home/harshal/nlp%20project%20/medical-entity-linking/TrainWord2Vec/TrainWord2Vec) pipeline
-
-4. `transformer_scratch`
+3. `transformer_scratch`
    The scratch transformer encoder from [`models/transformer_scratch/`](/home/harshal/nlp%20project%20/medical-entity-linking/models/transformer_scratch)
 
-5. `transformer_scratch_simcse`
+4. `transformer_scratch_simcse`
    The SimCSE-fine-tuned version of the scratch transformer encoder
 
 The `fasttext` model is implemented and benchmark-ready, but its results should be added after the next evaluation run on the server.
@@ -712,5 +689,5 @@ python evaluation/run_all.py --model transformer_scratch --use_simcse --use_rera
 Create a clean comparison table:
 
 ```bash
-python evaluation/compare_results.py --models word2vec fasttext trainword2vec transformer_scratch transformer_scratch_simcse
+python evaluation/compare_results.py --models word2vec fasttext transformer_scratch transformer_scratch_simcse
 ```

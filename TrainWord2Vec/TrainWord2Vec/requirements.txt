@@ -1,6 +1,0 @@
-gensim==4.3.2
-torch
-tqdm
-nltk
-numpy
-requests

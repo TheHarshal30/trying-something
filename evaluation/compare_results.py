@@ -5,7 +5,7 @@ Build clean side-by-side comparison tables for a selected set of models.
 
 Example:
     python evaluation/compare_results.py \
-        --models word2vec trainword2vec transformer_scratch
+        --models word2vec transformer_scratch
 """
 
 from __future__ import annotations
@@ -152,7 +152,7 @@ def main() -> None:
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["word2vec", "trainword2vec", "transformer_scratch"],
+        default=["word2vec", "transformer_scratch"],
         help="models to compare",
     )
     args = parser.parse_args()
