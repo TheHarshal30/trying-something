@@ -27,6 +27,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from assets import ensure_entity_linking_assets
+from load_ctd_chemicals import load_clean_kb
 from reranker import RerankerConfig, rerank_candidates, train_reranker
 
 try:
@@ -139,47 +140,6 @@ def is_valid_name(name) -> bool:
     return True
 
 
-def is_probable_id(value) -> bool:
-    if value is None:
-        return False
-
-    text = str(value).strip()
-    if not text:
-        return False
-
-    norm = text.lower()
-    if norm.startswith("dtxsid"):
-        return True
-    if re.fullmatch(r"[CD]\d{4,}", text):
-        return True
-    if len(text) > 5 and text.isalnum() and " " not in text:
-        return True
-    return False
-
-
-def extract_kb_name_and_id(row: pd.Series, name_col: str, id_col: str) -> tuple[str | None, str | None]:
-    """
-    Some CTD exports or local preprocessing can effectively swap the expected
-    name/id columns. Infer the human-readable term and the identifier per row
-    instead of trusting column position blindly.
-    """
-    raw_name = row.get(name_col)
-    raw_id = row.get(id_col)
-
-    candidates = [raw_name, raw_id]
-
-    name = next((cand for cand in candidates if is_valid_name(cand)), None)
-    chem_id = next((cand for cand in candidates if is_probable_id(cand)), None)
-
-    if name is None or chem_id is None:
-        return None, None
-
-    if normalize(name) == normalize(chem_id):
-        return None, None
-
-    return str(name), str(chem_id)
-
-
 # ─── KB loader ────────────────────────────────────────────────────────────────
 
 def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, str]]:
@@ -195,17 +155,21 @@ def load_kb(kb_path: Path, entity_type: str) -> dict[str, list[str] | dict[str, 
         name_col = 'DiseaseName'
         id_col   = 'DiseaseID'
     else:
-        col_names = [
-            'ChemicalName', 'ChemicalID', 'CasRN', 'Definition',
-            'ParentIDs', 'TreeNumbers', 'ParentTreeNumbers', 'Synonyms'
-        ]
-        name_col = 'ChemicalName'
-        id_col   = 'ChemicalID'
+        return _build_chemical_kb(kb_path)
 
     df = pd.read_csv(kb_path, sep='\t', comment='#', header=None,
                      names=col_names, on_bad_lines='skip')
 
     return _build_kb(df, name_col, id_col, entity_type, kb_path)
+
+
+def _build_chemical_kb(kb_path: Path) -> dict[str, list[str] | dict[str, str]]:
+    kb_terms, kb_ids = load_clean_kb(kb_path)
+    id_to_name: dict[str, str] = {}
+    for term, mid in zip(kb_terms, kb_ids):
+        id_to_name.setdefault(mid, term)
+    print(f'loaded KB: {len(kb_terms)} entries from {kb_path.name}')
+    return {"ids": kb_ids, "terms": kb_terms, "id_to_name": id_to_name}
 
 
 def _build_kb(
