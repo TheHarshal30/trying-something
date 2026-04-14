@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import re
 from pathlib import Path
 
@@ -26,18 +25,25 @@ def is_valid_name(name) -> bool:
     return True
 
 
-def read_tsv(path: Path) -> list[dict[str, str]]:
+def read_ctd_chemicals(path: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
-        filtered = (line for line in handle if line.strip() and not line.startswith("#"))
-        reader = csv.DictReader(filtered, delimiter="\t")
-        for row in reader:
-            rows.append({key: (value if value is not None else "") for key, value in row.items()})
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            rows.append(
+                {
+                    "ChemicalName": parts[0] if len(parts) > 0 else "",
+                    "ChemicalID": parts[1] if len(parts) > 1 else "",
+                    "Synonyms": parts[11] if len(parts) > 11 else "",
+                }
+            )
     return rows
 
 
 def load_clean_kb(path: Path) -> tuple[list[str], list[str]]:
-    rows = read_tsv(path)
+    rows = read_ctd_chemicals(path)
 
     print("\n[RAW KB SAMPLE]")
     for row in rows[:5]:
@@ -96,7 +102,7 @@ def load_clean_kb(path: Path) -> tuple[list[str], list[str]]:
     for term in dedup_terms[:20]:
         print(term)
 
-    assert len(dedup_terms) > 10000, "KB too small -> wrong file"
+    assert len(dedup_terms) > 10000, f"KB too small -> wrong file ({len(dedup_terms)} terms)"
     assert any("aspirin" in term for term in dedup_terms), "KB missing basic chemicals"
 
     return dedup_terms, dedup_ids
